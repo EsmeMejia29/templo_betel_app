@@ -213,127 +213,129 @@ class CalendarTab extends StatelessWidget {
 
     const weekdays = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 
-    return Padding(
-      padding: const EdgeInsets.all(12.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            "Calendario Mensual",
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: theme.primaryColor),
-          ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
-            children: weekdays.map((day) => Expanded(
-              child: Text(
-                day, 
-                textAlign: TextAlign.center, 
-                style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.secondary, fontSize: 13)
-              ),
-            )).toList(),
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: readings.isEmpty
-                ? const Center(child: CircularProgressIndicator())
-                : GridView.builder(
-                    gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                      crossAxisCount: 7, 
-                      crossAxisSpacing: 4,
-                      mainAxisSpacing: 4,
-                      childAspectRatio: 0.72, 
-                    ),
-                    itemCount: readings.length,
-                    itemBuilder: (context, index) {
-                      final reading = readings[index];
-                      final readingDate = DateTime(reading.date.year, reading.date.month, reading.date.day);
-                      final isFuture = readingDate.isAfter(today);
-                      final hasEvent = reading.specialEvent != null && reading.specialEvent!.isNotEmpty;
+    // MODIFICACIÓN: Envolvemos todo en un SafeArea para asegurar que respire en la parte superior
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16.0, 16.0, 16.0, 12.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              "Calendario Mensual",
+              style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: theme.primaryColor),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: weekdays.map((day) => Expanded(
+                child: Text(
+                  day, 
+                  textAlign: TextAlign.center, 
+                  style: TextStyle(fontWeight: FontWeight.bold, color: theme.colorScheme.secondary, fontSize: 13)
+                ),
+              )).toList(),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: readings.isEmpty
+                  ? const Center(child: CircularProgressIndicator())
+                  : GridView.builder(
+                      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                        crossAxisCount: 7, 
+                        crossAxisSpacing: 4,
+                        mainAxisSpacing: 4,
+                        childAspectRatio: 0.72, 
+                      ),
+                      itemCount: readings.length,
+                      itemBuilder: (context, index) {
+                        final reading = readings[index];
+                        final readingDate = DateTime(reading.date.year, reading.date.month, reading.date.day);
+                        final isFuture = readingDate.isAfter(today);
+                        final hasEvent = reading.specialEvent != null && reading.specialEvent!.isNotEmpty;
 
-                      return Opacity(
-                        opacity: isFuture ? 0.4 : 1.0, 
-                        child: Card(
-                          elevation: reading.isCompleted ? 0 : 1,
-                          color: reading.isCompleted 
-                              ? theme.primaryColor.withValues(alpha: 0.1) 
-                              : Colors.white,
-                          shape: RoundedRectangleBorder(
-                            side: BorderSide(
-                              color: readingDate.isAtSameMomentAs(today)
-                                  ? theme.colorScheme.tertiary
-                                  : theme.colorScheme.secondary.withValues(alpha: 0.2),
-                              width: readingDate.isAtSameMomentAs(today) ? 1.5 : 1,
+                        return Opacity(
+                          opacity: isFuture ? 0.4 : 1.0, 
+                          child: Card(
+                            elevation: reading.isCompleted ? 0 : 1,
+                            color: reading.isCompleted 
+                                ? theme.primaryColor.withValues(alpha: 0.1) 
+                                : Colors.white,
+                            shape: RoundedRectangleBorder(
+                              side: BorderSide(
+                                color: readingDate.isAtSameMomentAs(today)
+                                    ? theme.colorScheme.tertiary
+                                    : theme.colorScheme.secondary.withValues(alpha: 0.2),
+                                width: readingDate.isAtSameMomentAs(today) ? 1.5 : 1,
+                              ),
+                              borderRadius: BorderRadius.circular(8),
                             ),
-                            borderRadius: BorderRadius.circular(8),
-                          ),
-                          child: InkWell(
-                            borderRadius: BorderRadius.circular(8),
-                            // MODIFICACIÓN: Ahora siempre abre el modal, pasándole si el día es futuro o no
-                            onTap: () => _showDayDetailsModal(context, reading, isFuture, theme),
-                            child: Padding(
-                              padding: const EdgeInsets.all(4.0),
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                children: [
-                                  Align(
-                                    alignment: Alignment.topLeft,
-                                    child: Text(
-                                      "${reading.date.day}",
-                                      style: TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 11,
-                                        color: readingDate.isAtSameMomentAs(today)
-                                            ? theme.colorScheme.tertiary
-                                            : theme.primaryColor,
-                                      ),
-                                    ),
-                                  ),
-                                  Text(
-                                    reading.bookAndChapter
-                                        .replaceAll("Deuteronomio", "Deut.")
-                                        .replaceAll("Números", "Núm.")
-                                        .replaceAll("Apocalipsis", "Apoc."),
-                                    textAlign: TextAlign.center,
-                                    style: TextStyle(
-                                      fontSize: 9,
-                                      fontWeight: FontWeight.bold,
-                                      color: Colors.grey.shade800,
-                                    ),
-                                  ),
-                                  if (hasEvent)
-                                    Padding(
-                                      padding: const EdgeInsets.symmetric(vertical: 1.0),
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(8),
+                              onTap: () => _showDayDetailsModal(context, reading, isFuture, theme),
+                              child: Padding(
+                                padding: const EdgeInsets.all(4.0),
+                                child: Column(
+                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                  children: [
+                                    Align(
+                                      alignment: Alignment.topLeft,
                                       child: Text(
-                                        reading.specialEvent!,
-                                        textAlign: TextAlign.center,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
+                                        "${reading.date.day}",
                                         style: TextStyle(
-                                          fontSize: 8,
-                                          fontWeight: FontWeight.w600,
-                                          color: theme.colorScheme.secondary, 
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 11,
+                                          color: readingDate.isAtSameMomentAs(today)
+                                              ? theme.colorScheme.tertiary
+                                              : theme.primaryColor,
                                         ),
                                       ),
-                                    )
-                                  else
-                                    const SizedBox(height: 1),
-                                  if (reading.isCompleted)
-                                    Icon(Icons.check_circle, size: 14, color: theme.primaryColor)
-                                  else if (isFuture)
-                                    const Icon(Icons.lock_outline, size: 11, color: Colors.grey)
-                                  else
-                                    const SizedBox(height: 14),
-                                ],
+                                    ),
+                                    Text(
+                                      reading.bookAndChapter
+                                          .replaceAll("Deuteronomio", "Deut.")
+                                          .replaceAll("Números", "Núm.")
+                                          .replaceAll("Apocalipsis", "Apoc."),
+                                      textAlign: TextAlign.center,
+                                      style: TextStyle(
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.bold,
+                                        color: Colors.grey.shade800,
+                                      ),
+                                    ),
+                                    if (hasEvent)
+                                      Padding(
+                                        padding: const EdgeInsets.symmetric(vertical: 1.0),
+                                        child: Text(
+                                          reading.specialEvent!,
+                                          textAlign: TextAlign.center,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 8,
+                                            fontWeight: FontWeight.w600,
+                                            color: theme.colorScheme.secondary, 
+                                          ),
+                                        ),
+                                      )
+                                    else
+                                      const SizedBox(height: 1),
+                                    if (reading.isCompleted)
+                                      Icon(Icons.check_circle, size: 14, color: theme.primaryColor)
+                                    else if (isFuture)
+                                      const Icon(Icons.lock_outline, size: 11, color: Colors.grey)
+                                    else
+                                      const SizedBox(height: 14),
+                                  ],
+                                ),
                               ),
                             ),
                           ),
-                        ),
-                      );
-                    },
-                  ),
-          ),
-        ],
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
       ),
     );
   }

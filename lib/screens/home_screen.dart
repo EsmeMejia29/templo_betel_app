@@ -48,11 +48,11 @@ class _HomeScreenState extends State<HomeScreen> {
           specialEvent: reading.specialEvent,
           dailyVerse: reading.dailyVerse,
           dailyVerseRef: reading.dailyVerseRef,
-          isCompleted: false, // Se evalúa dinámicamente según el progreso del usuario
+          chapterContent: reading.chapterContent,
+          isCompleted: false, 
         );
       }).toList();
 
-      // Si el usuario tiene sesión activa, cruzamos su progreso guardado en la nube
       if (_activeProfileId != null) {
         final progressResponse = await supabase
             .from('user_progress')
@@ -88,10 +88,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
     _totalReadChapters = _loadedReadings.where((r) => r.isCompleted).length;
 
-    // Resetear el tracker de la semana
     _weeklyTracker = List.generate(7, (_) => false);
     for (var reading in _loadedReadings) {
-      // Si es de esta semana, marcar constancia
       if (reading.isCompleted) {
         int weekdayIndex = reading.date.weekday - 1;
         if (weekdayIndex >= 0 && weekdayIndex < 7) {
@@ -211,7 +209,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _activeProfileId = profileId;
       _isInitialized = false; 
-      _futureReadings = _fetchCalendarFromSupabase(); // Recarga el calendario cruzando tus lecturas reales
+      _futureReadings = _fetchCalendarFromSupabase(); 
     });
   }
 
@@ -264,9 +262,18 @@ class _HomeScreenState extends State<HomeScreen> {
         ];
 
         return Scaffold(
-          body: IndexedStack(
-            index: _currentIndex,
-            children: tabs,
+          body: SafeArea(
+            child: Column(
+              children: [
+                const SizedBox(height: 30),
+                Expanded(
+                  child: IndexedStack(
+                    index: _currentIndex,
+                    children: tabs,
+                  ),
+                ),
+              ],
+            ),
           ),
           bottomNavigationBar: BottomNavigationBar(
             currentIndex: _currentIndex,
