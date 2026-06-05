@@ -26,7 +26,6 @@ class _TodayTabState extends State<TodayTab> {
   late FlutterTts _flutterTts;
   bool _isPlaying = false;
 
-  // Listas nativas para traducir la fecha de forma manual y segura
   static const List<String> _meses = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
@@ -42,16 +41,17 @@ class _TodayTabState extends State<TodayTab> {
     _initTts();
   }
 
-  void _initTts() {
+  void _initTts() async {
     _flutterTts = FlutterTts();
+    try {
+      await _flutterTts.setLanguage("es");
+      await _flutterTts.setSpeechRate(0.5);
+      await _flutterTts.setVolume(1.0);
+      await _flutterTts.setPitch(1.0);
+    } catch (e) {
+      print(e);
+    }
 
-    // Configuración del motor de voz en Español
-    _flutterTts.setLanguage("es-ES");
-    _flutterTts.setSpeechRate(0.5); // Velocidad moderada y reverente para la Biblia
-    _flutterTts.setVolume(1.0);
-    _flutterTts.setPitch(1.0);
-
-    // Listeners para cambiar dinámicamente el icono del botón de audio
     _flutterTts.setStartHandler(() {
       setState(() => _isPlaying = true);
     });
@@ -67,7 +67,7 @@ class _TodayTabState extends State<TodayTab> {
 
   @override
   void dispose() {
-    _flutterTts.stop(); // Detiene el audio si el usuario se sale de la pestaña
+    _flutterTts.stop();
     super.dispose();
   }
 
@@ -77,7 +77,11 @@ class _TodayTabState extends State<TodayTab> {
       setState(() => _isPlaying = false);
     } else {
       if (text.isNotEmpty) {
-        await _flutterTts.speak(text);
+        await _flutterTts.awaitSpeakCompletion(true);
+        var result = await _flutterTts.speak(text);
+        if (result == 1) {
+          setState(() => _isPlaying = true);
+        }
       }
     }
   }
@@ -99,7 +103,6 @@ class _TodayTabState extends State<TodayTab> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 1. Encabezado de Racha y Día
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -141,8 +144,6 @@ class _TodayTabState extends State<TodayTab> {
             ],
           ),
           const SizedBox(height: 24),
-
-          // 2. Tarjeta Principal: Lectura del Día
           Card(
             elevation: 3,
             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -206,8 +207,6 @@ class _TodayTabState extends State<TodayTab> {
             ),
           ),
           const SizedBox(height: 20),
-
-          // 3. Sección: Versículo Diario
           if (hasVerse) ...[
             Text(
               "Versículo Clave",
@@ -241,8 +240,6 @@ class _TodayTabState extends State<TodayTab> {
             ),
             const SizedBox(height: 20),
           ],
-
-          // 4. SECCIÓN: Contenido del Capítulo + Controles de Accesibilidad
           if (hasContent) ...[
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -251,7 +248,6 @@ class _TodayTabState extends State<TodayTab> {
                   "Guía del Capítulo",
                   style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: theme.primaryColor),
                 ),
-                // Controles integrados de Audio y Tamaño
                 Row(
                   children: [
                     IconButton(
@@ -297,7 +293,7 @@ class _TodayTabState extends State<TodayTab> {
                         widget.todayReading.chapterContent!,
                         textAlign: TextAlign.justify, 
                         style: TextStyle(
-                          fontSize: widget.currentFontSize, // Tamaño dinámico heredado
+                          fontSize: widget.currentFontSize, 
                           color: Colors.grey.shade800, 
                           height: 1.6, 
                           letterSpacing: 0.2,
