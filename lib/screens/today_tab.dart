@@ -41,16 +41,14 @@ class _TodayTabState extends State<TodayTab> {
     _initTts();
   }
 
-  void _initTts() async {
+  void _initTts() {
     _flutterTts = FlutterTts();
-    try {
-      await _flutterTts.setLanguage("es");
-      await _flutterTts.setSpeechRate(0.5);
-      await _flutterTts.setVolume(1.0);
-      await _flutterTts.setPitch(1.0);
-    } catch (e) {
-      print(e);
-    }
+    
+    // Configuración directa síncrona para máxima compatibilidad web release
+    _flutterTts.setLanguage("es");
+    _flutterTts.setSpeechRate(0.5);
+    _flutterTts.setVolume(1.0);
+    _flutterTts.setPitch(1.0);
 
     _flutterTts.setStartHandler(() {
       setState(() => _isPlaying = true);
@@ -71,17 +69,16 @@ class _TodayTabState extends State<TodayTab> {
     super.dispose();
   }
 
-  Future<void> _speakText(String text) async {
+  // 👈 CORRECCIÓN CRÍTICA: Eliminamos los "await" previos para que el navegador 
+  // asocie el audio inmediatamente a la acción de hacer click del usuario.
+  void _speakText(String text) {
     if (_isPlaying) {
-      await _flutterTts.stop();
+      _flutterTts.stop();
       setState(() => _isPlaying = false);
     } else {
       if (text.isNotEmpty) {
-        await _flutterTts.awaitSpeakCompletion(true);
-        var result = await _flutterTts.speak(text);
-        if (result == 1) {
-          setState(() => _isPlaying = true);
-        }
+        _flutterTts.speak(text);
+        setState(() => _isPlaying = true);
       }
     }
   }
