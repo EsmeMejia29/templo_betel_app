@@ -25,6 +25,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<bool> _weeklyTracker = List.generate(7, (_) => false);
 
+  // 👈 NUEVO: Estado del tamaño de fuente controlado desde el HomeScreen
+  double _bibleFontSize = 14.0;
+
   @override
   void initState() {
     super.initState();
@@ -250,7 +253,18 @@ class _HomeScreenState extends State<HomeScreen> {
 
         final List<Widget> tabs = [
           CalendarTab(readings: _loadedReadings, onToggle: _toggleReadingStatus),
-          TodayTab(todayReading: todayReading, onToggle: _toggleReadingStatus, streakCount: _currentStreak),
+          // 👈 MODIFICADO: Pasamos el tamaño de fuente y un callback para actualizarlo desde la pestaña
+          TodayTab(
+            todayReading: todayReading, 
+            onToggle: _toggleReadingStatus, 
+            streakCount: _currentStreak,
+            currentFontSize: _bibleFontSize,
+            onFontSizeChanged: (newSize) {
+              setState(() {
+                _bibleFontSize = newSize;
+              });
+            },
+          ),
           ProfileScreen(
             streakCount: _currentStreak, 
             totalRead: _totalReadChapters,

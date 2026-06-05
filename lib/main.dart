@@ -6,7 +6,6 @@ import 'screens/home_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Reemplaza con los datos reales de las configuraciones de tu proyecto en Supabase
   await Supabase.initialize(
     url: 'https://qmwljxvpawnfthsfkstb.supabase.co',
     anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFtd2xqeHZwYXduZnRoc2Zrc3RiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODA1MzY0MzEsImV4cCI6MjA5NjExMjQzMX0.ujWsQ6yt-pg2H77nqVuI8ZZVTR6SuUERGjWsiNnwWhY',
@@ -15,7 +14,6 @@ void main() async {
   runApp(const TemploBetelApp());
 }
 
-// Atajo global conveniente para llamar a Supabase desde cualquier archivo
 final supabase = Supabase.instance.client;
 
 class TemploBetelApp extends StatelessWidget {

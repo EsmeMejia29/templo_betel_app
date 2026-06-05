@@ -1,19 +1,32 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import '../models/reading_model.dart';
 
-class TodayTab extends StatelessWidget {
+class TodayTab extends StatefulWidget {
   final DevotionalReading todayReading;
   final Function(DevotionalReading) onToggle;
   final int streakCount;
+  final double currentFontSize;
+  final ValueChanged<double> onFontSizeChanged;
 
   const TodayTab({
     super.key,
     required this.todayReading,
     required this.onToggle,
     required this.streakCount,
+    required this.currentFontSize,
+    required this.onFontSizeChanged,
   });
 
-  // Listas nativas para traducir la fecha de forma manual y segura sin depender de intl
+  @override
+  State<TodayTab> createState() => _TodayTabState();
+}
+
+class _TodayTabState extends State<TodayTab> {
+  late FlutterTts _flutterTts;
+  bool _isPlaying = false;
+
+  // Listas nativas para traducir la fecha de forma manual y segura
   static const List<String> _meses = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
@@ -24,15 +37,60 @@ class TodayTab extends StatelessWidget {
   ];
 
   @override
+  void initState() {
+    super.initState();
+    _initTts();
+  }
+
+  void _initTts() {
+    _flutterTts = FlutterTts();
+
+    // Configuración del motor de voz en Español
+    _flutterTts.setLanguage("es-ES");
+    _flutterTts.setSpeechRate(0.5); // Velocidad moderada y reverente para la Biblia
+    _flutterTts.setVolume(1.0);
+    _flutterTts.setPitch(1.0);
+
+    // Listeners para cambiar dinámicamente el icono del botón de audio
+    _flutterTts.setStartHandler(() {
+      setState(() => _isPlaying = true);
+    });
+
+    _flutterTts.setCompletionHandler(() {
+      setState(() => _isPlaying = false);
+    });
+
+    _flutterTts.setErrorHandler((msg) {
+      setState(() => _isPlaying = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _flutterTts.stop(); // Detiene el audio si el usuario se sale de la pestaña
+    super.dispose();
+  }
+
+  Future<void> _speakText(String text) async {
+    if (_isPlaying) {
+      await _flutterTts.stop();
+      setState(() => _isPlaying = false);
+    } else {
+      if (text.isNotEmpty) {
+        await _flutterTts.speak(text);
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final hasEvent = todayReading.specialEvent != null && todayReading.specialEvent!.isNotEmpty;
-    final hasVerse = todayReading.dailyVerse != null && todayReading.dailyVerse!.isNotEmpty;
-    final hasContent = todayReading.chapterContent != null && todayReading.chapterContent!.isNotEmpty;
+    final hasEvent = widget.todayReading.specialEvent != null && widget.todayReading.specialEvent!.isNotEmpty;
+    final hasVerse = widget.todayReading.dailyVerse != null && widget.todayReading.dailyVerse!.isNotEmpty;
+    final hasContent = widget.todayReading.chapterContent != null && widget.todayReading.chapterContent!.isNotEmpty;
 
-    // Construimos la fecha de hoy de forma manual: "JUEVES, 4 DE JUNIO"
-    final readingDate = todayReading.date;
-    final nombreDia = _diasSemana[readingDate.weekday % 7]; // Ajuste seguro de indexación de días
+    final readingDate = widget.todayReading.date;
+    final nombreDia = _diasSemana[readingDate.weekday % 7]; 
     final nombreMes = _meses[readingDate.month - 1];
     final String formattedDate = "$nombreDia, ${readingDate.day} de $nombreMes".toUpperCase();
 
@@ -74,8 +132,7 @@ class TodayTab extends StatelessWidget {
                     const Text("🔥", style: TextStyle(fontSize: 16)),
                     const SizedBox(width: 6),
                     Text(
-                      "$streakCount ${streakCount == 1 ? 'DÍA' : 'DÍAS'}",
-                      // 👈 CORREGIDO: color nativo válido de Flutter
+                      "${widget.streakCount} ${widget.streakCount == 1 ? 'DÍA' : 'DÍAS'}",
                       style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.deepOrange, fontSize: 13),
                     ),
                   ],
@@ -114,7 +171,7 @@ class TodayTab extends StatelessWidget {
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    todayReading.bookAndChapter,
+                    widget.todayReading.bookAndChapter,
                     style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold, letterSpacing: -0.5),
                   ),
                   if (hasEvent) ...[
@@ -123,7 +180,7 @@ class TodayTab extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
                       child: Text(
-                        todayReading.specialEvent!,
+                        widget.todayReading.specialEvent!,
                         style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
                       ),
                     ),
@@ -131,16 +188,16 @@ class TodayTab extends StatelessWidget {
                   const SizedBox(height: 24),
                   ElevatedButton.icon(
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: todayReading.isCompleted ? Colors.green.shade600 : Colors.white,
-                      foregroundColor: todayReading.isCompleted ? Colors.white : theme.primaryColor,
+                      backgroundColor: widget.todayReading.isCompleted ? Colors.green.shade600 : Colors.white,
+                      foregroundColor: widget.todayReading.isCompleted ? Colors.white : theme.primaryColor,
                       minimumSize: const Size.fromHeight(48),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                       elevation: 0,
                     ),
-                    onPressed: () => onToggle(todayReading),
-                    icon: Icon(todayReading.isCompleted ? Icons.check_circle : Icons.bookmark_add_outlined),
+                    onPressed: () => widget.onToggle(widget.todayReading),
+                    icon: Icon(widget.todayReading.isCompleted ? Icons.check_circle : Icons.bookmark_add_outlined),
                     label: Text(
-                      todayReading.isCompleted ? "¡COMPLETADO!" : "MARCAR COMO LEÍDO",
+                      widget.todayReading.isCompleted ? "¡COMPLETADO!" : "MARCAR COMO LEÍDO",
                       style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5),
                     ),
                   ),
@@ -150,7 +207,7 @@ class TodayTab extends StatelessWidget {
           ),
           const SizedBox(height: 20),
 
-          // 3. Sección: Versículo Diario (Abajo de la tarjeta principal)
+          // 3. Sección: Versículo Diario
           if (hasVerse) ...[
             Text(
               "Versículo Clave",
@@ -167,14 +224,14 @@ class TodayTab extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      "\"${todayReading.dailyVerse}\"",
+                      "\"${widget.todayReading.dailyVerse}\"",
                       style: TextStyle(fontSize: 15, fontStyle: FontStyle.italic, color: Colors.grey.shade800, height: 1.4),
                     ),
                     const SizedBox(height: 10),
                     Align(
                       alignment: Alignment.bottomRight,
                       child: Text(
-                        todayReading.dailyVerseRef ?? "",
+                        widget.todayReading.dailyVerseRef ?? "",
                         style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: theme.primaryColor),
                       ),
                     ),
@@ -185,11 +242,43 @@ class TodayTab extends StatelessWidget {
             const SizedBox(height: 20),
           ],
 
-          // 4. NUEVA SECCIÓN: Contenido o Detalles del Capítulo (Abajo del versículo)
+          // 4. SECCIÓN: Contenido del Capítulo + Controles de Accesibilidad
           if (hasContent) ...[
-            Text(
-              "Guía del Capítulo",
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: theme.primaryColor),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  "Guía del Capítulo",
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: theme.primaryColor),
+                ),
+                // Controles integrados de Audio y Tamaño
+                Row(
+                  children: [
+                    IconButton(
+                      icon: Icon(
+                        _isPlaying ? Icons.stop_circle_rounded : Icons.play_circle_fill_rounded,
+                        color: _isPlaying ? Colors.redAccent : theme.primaryColor,
+                        size: 26,
+                      ),
+                      tooltip: _isPlaying ? "Detener" : "Escuchar",
+                      onPressed: () => _speakText(widget.todayReading.chapterContent!),
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: Icon(Icons.text_decrease_rounded, color: theme.primaryColor, size: 20),
+                      onPressed: widget.currentFontSize > 12.0
+                          ? () => widget.onFontSizeChanged(widget.currentFontSize - 2.0)
+                          : null,
+                    ),
+                    IconButton(
+                      icon: Icon(Icons.text_increase_rounded, color: theme.primaryColor, size: 20),
+                      onPressed: widget.currentFontSize < 24.0
+                          ? () => widget.onFontSizeChanged(widget.currentFontSize + 2.0)
+                          : null,
+                    ),
+                  ],
+                )
+              ],
             ),
             const SizedBox(height: 8),
             Card(
@@ -205,8 +294,14 @@ class TodayTab extends StatelessWidget {
                     const SizedBox(width: 12),
                     Expanded(
                       child: Text(
-                        todayReading.chapterContent!,
-                        style: TextStyle(fontSize: 14, color: Colors.grey.shade800, height: 1.5),
+                        widget.todayReading.chapterContent!,
+                        textAlign: TextAlign.justify, 
+                        style: TextStyle(
+                          fontSize: widget.currentFontSize, // Tamaño dinámico heredado
+                          color: Colors.grey.shade800, 
+                          height: 1.6, 
+                          letterSpacing: 0.2,
+                        ),
                       ),
                     ),
                   ],

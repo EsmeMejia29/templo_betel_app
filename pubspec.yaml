@@ -38,6 +38,9 @@ dependencies:
   supabase_flutter: ^2.12.4
   shared_preferences: ^2.5.5
 
+  
+  flutter_tts: ^4.1.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter  

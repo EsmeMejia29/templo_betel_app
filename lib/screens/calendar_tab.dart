@@ -29,7 +29,6 @@ class _CalendarTabState extends State<CalendarTab> {
     super.initState();
     _scrollController = ScrollController();
 
-    // Ejecutamos el scroll automático justo después de que se renderice el primer frame
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _scrollToCurrentMonth();
     });
@@ -48,33 +47,26 @@ class _CalendarTabState extends State<CalendarTab> {
     final groupedReadings = _groupReadingsByMonth();
     final monthKeys = groupedReadings.keys.toList();
 
-    // Buscamos la llave del mes actual (Ejemplo: "2026-6")
     final currentKey = "${now.year}-${now.month}";
     final targetIndex = monthKeys.indexOf(currentKey);
 
-    // Si el mes actual existe en tu lista de Supabase, calculamos la posición aproximada
     if (targetIndex != -1) {
       double targetOffset = 0.0;
 
-      // Estimación de altura por bloque de mes para un scroll suave pero preciso:
       for (int i = 0; i < targetIndex; i++) {
         final readingsInMonth = groupedReadings[monthKeys[i]]!.length;
         final firstDay = groupedReadings[monthKeys[i]]!.first.date;
         final offset = firstDay.weekday % 7;
         
-        // Calculamos cuántas filas de 7 días ocupa este mes en particular
         final int rows = ((readingsInMonth + offset) / 7).ceil();
         
-        // Sumamos la altura estimada de este mes (Título: ~50px + (Filas * altura de tarjeta ~92px) + espaciados)
         targetOffset += 50.0 + (rows * 92.0) + 16.0;
       }
 
-      // Verificamos que no nos pasemos del límite máximo del scroll
       if (_scrollController.hasClients) {
         final maxScroll = _scrollController.position.maxScrollExtent;
         if (targetOffset > maxScroll) targetOffset = maxScroll;
 
-        // Hace el movimiento con una animación sutil y elegante
         _scrollController.animateTo(
           targetOffset,
           duration: const Duration(milliseconds: 600),
