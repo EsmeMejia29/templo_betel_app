@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_tts/flutter_tts.dart';
 import '../models/reading_model.dart';
+import 'dart:js' as js;
 
 class TodayTab extends StatefulWidget {
   final DevotionalReading todayReading;
@@ -42,43 +44,86 @@ class _TodayTabState extends State<TodayTab> {
   }
 
   void _initTts() {
-    _flutterTts = FlutterTts();
-    
-    // Configuración directa síncrona para máxima compatibilidad web release
-    _flutterTts.setLanguage("es");
-    _flutterTts.setSpeechRate(0.5);
-    _flutterTts.setVolume(1.0);
-    _flutterTts.setPitch(1.0);
+    if (!kIsWeb) {
+      _flutterTts = FlutterTts();
+      _flutterTts.setLanguage("es");
+      _flutterTts.setSpeechRate(0.5);
+      _flutterTts.setVolume(1.0);
+      _flutterTts.setPitch(1.0);
 
-    _flutterTts.setStartHandler(() {
-      setState(() => _isPlaying = true);
-    });
-
-    _flutterTts.setCompletionHandler(() {
-      setState(() => _isPlaying = false);
-    });
-
-    _flutterTts.setErrorHandler((msg) {
-      setState(() => _isPlaying = false);
-    });
+      _flutterTts.setStartHandler(() {
+        setState(() => _isPlaying = true);
+      });
+      _flutterTts.setCompletionHandler(() {
+        setState(() => _isPlaying = false);
+      });
+      _flutterTts.setErrorHandler((msg) {
+        setState(() => _isPlaying = false);
+      });
+    }
   }
 
   @override
   void dispose() {
-    _flutterTts.stop();
+    if (kIsWeb) {
+      _stopWebSpeech();
+    } else {
+      _flutterTts.stop();
+    }
     super.dispose();
   }
 
-  void _speakText(String text) {
+  void _speakWebText(String text) {
     if (_isPlaying) {
-      _flutterTts.stop();
-      setState(() => _isPlaying = false);
+      _stopWebSpeech();
     } else {
-      if (text.isNotEmpty) {
+      final synth = js.context['speechSynthesis'];
+      if (synth == null) return;
+
+      synth.callMethod('cancel');
+
+      final utteranceInterface = js.context['SpeechSynthesisUtterance'];
+      if (utteranceInterface == null) return;
+
+      final utterance = js.JsObject(utteranceInterface, [text]);
+      utterance['lang'] = 'es-ES';
+      utterance['rate'] = 0.95;
+
+      utterance['onstart'] = js.allowInterop((_) {
+        setState(() => _isPlaying = true);
+      });
+      utterance['onend'] = js.allowInterop((_) {
+        setState(() => _isPlaying = false);
+      });
+      utterance['onerror'] = js.allowInterop((_) {
+        setState(() => _isPlaying = false);
+      });
+
+      synth.callMethod('speak', [utterance]);
+    }
+  }
+
+  void _stopWebSpeech() {
+    js.context['speechSynthesis']?.callMethod('cancel');
+    setState(() => _isPlaying = false);
+  }
+
+  void _speakText(String text) {
+    if (text.isEmpty) return;
+
+    String cleanText = text
+        .replaceAll('\n', ' ')
+        .replaceAll(RegExp(r'\d+'), '')
+        .replaceAll(RegExp(r'[\$\#\_\@]'), '')
+        .trim();
+
+    if (kIsWeb) {
+      _speakWebText(cleanText);
+    } else {
+      if (_isPlaying) {
         _flutterTts.stop();
-
-        String cleanText = text.replaceAll('\n', ' ').replaceAll('\$\$', '').trim();
-
+        setState(() => _isPlaying = false);
+      } else {
         _flutterTts.speak(cleanText);
         setState(() => _isPlaying = true);
       }
