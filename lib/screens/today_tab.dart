@@ -69,15 +69,17 @@ class _TodayTabState extends State<TodayTab> {
     super.dispose();
   }
 
-  // 👈 CORRECCIÓN CRÍTICA: Eliminamos los "await" previos para que el navegador 
-  // asocie el audio inmediatamente a la acción de hacer click del usuario.
   void _speakText(String text) {
     if (_isPlaying) {
       _flutterTts.stop();
       setState(() => _isPlaying = false);
     } else {
       if (text.isNotEmpty) {
-        _flutterTts.speak(text);
+        _flutterTts.stop();
+
+        String cleanText = text.replaceAll('\n', ' ').replaceAll('\$\$', '').trim();
+
+        _flutterTts.speak(cleanText);
         setState(() => _isPlaying = true);
       }
     }
