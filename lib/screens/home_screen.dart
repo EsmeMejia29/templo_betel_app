@@ -18,23 +18,22 @@ class _HomeScreenState extends State<HomeScreen> {
   
   List<DevotionalReading> _loadedReadings = [];
   int _currentStreak = 0;
+  int _maxStreak = 0;
   int _totalReadChapters = 0;
   bool _isInitialized = false;
   
   String? _activeProfileId; 
 
   List<bool> _weeklyTracker = List.generate(7, (_) => false);
-
-  // 👈 NUEVO: Estado del tamaño de fuente controlado desde el HomeScreen
   double _bibleFontSize = 14.0;
 
   @override
   void initState() {
     super.initState();
-    _futureReadings = _fetchCalendarFromSupabase();
+    _futureReadings = _fetchCalendarAndProfileStats();
   }
 
-  Future<List<DevotionalReading>> _fetchCalendarFromSupabase() async {
+  Future<List<DevotionalReading>> _fetchCalendarAndProfileStats() async {
     try {
       final response = await supabase
           .from('readings')
@@ -71,6 +70,18 @@ class _HomeScreenState extends State<HomeScreen> {
             r.isCompleted = true;
           }
         }
+
+        final profileResponse = await supabase
+            .from('profiles')
+            .select('max_streak')
+            .eq('id', _activeProfileId!)
+            .maybeSingle();
+
+        if (profileResponse != null && profileResponse['max_streak'] != null) {
+          setState(() {
+            _maxStreak = profileResponse['max_streak'];
+          });
+        }
       }
       
       if (!_isInitialized || _activeProfileId != null) {
@@ -92,11 +103,20 @@ class _HomeScreenState extends State<HomeScreen> {
     _totalReadChapters = _loadedReadings.where((r) => r.isCompleted).length;
 
     _weeklyTracker = List.generate(7, (_) => false);
+
+    final inicioSemana = today.subtract(Duration(days: today.weekday - 1));
+    final finSemana = inicioSemana.add(const Duration(days: 6));
+
     for (var reading in _loadedReadings) {
       if (reading.isCompleted) {
-        int weekdayIndex = reading.date.weekday - 1;
-        if (weekdayIndex >= 0 && weekdayIndex < 7) {
-          _weeklyTracker[weekdayIndex] = true;
+        final fechaLectura = DateTime(reading.date.year, reading.date.month, reading.date.day);
+        
+        if ((fechaLectura.isAtSameMomentAs(inicioSemana) || fechaLectura.isAfter(inicioSemana)) &&
+            (fechaLectura.isAtSameMomentAs(finSemana) || fechaLectura.isBefore(finSemana))) {
+          int weekdayIndex = reading.date.weekday - 1;
+          if (weekdayIndex >= 0 && weekdayIndex < 7) {
+            _weeklyTracker[weekdayIndex] = true;
+          }
         }
       }
     }
@@ -133,6 +153,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
 
     _currentStreak = streak;
+
+    if (_currentStreak > _maxStreak) {
+      _maxStreak = _currentStreak;
+    }
   }
 
   Future<void> _toggleReadingStatus(DevotionalReading reading) async {
@@ -178,13 +202,39 @@ class _HomeScreenState extends State<HomeScreen> {
           'reading_id': reading.id, 
           'completed_at': DateTime.now().toIso8601String(),
         });
+        
+        _recalculateStats();
+        await supabase.from('profiles').update({
+          'current_streak': _currentStreak,
+        }).eq('id', profileId);
+
       } else {
         await supabase.from('user_progress').delete().match({
           'profile_id': profileId,
           'reading_id': reading.id,
         });
+
+        _recalculateStats();
+        await supabase.from('profiles').update({
+          'current_streak': _currentStreak,
+        }).eq('id', profileId);
       }
 
+      if (mounted) {
+        final profileResponse = await supabase
+            .from('profiles')
+            .select('max_streak')
+            .eq('id', profileId)
+            .maybeSingle();
+
+        if (profileResponse != null && profileResponse['max_streak'] != null) {
+          setState(() {
+            _maxStreak = profileResponse['max_streak'];
+          });
+        }
+      }
+
+      if (!mounted) return;
       setState(() {
         reading.isCompleted = !reading.isCompleted;
         _recalculateStats();
@@ -199,6 +249,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     } catch (error) {
       print("Error de sincronización con Supabase: $error");
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text("Error de conexión: No se pudo modificar tu progreso."),
@@ -212,7 +263,7 @@ class _HomeScreenState extends State<HomeScreen> {
     setState(() {
       _activeProfileId = profileId;
       _isInitialized = false; 
-      _futureReadings = _fetchCalendarFromSupabase(); 
+      _futureReadings = _fetchCalendarAndProfileStats(); 
     });
   }
 
@@ -222,9 +273,10 @@ class _HomeScreenState extends State<HomeScreen> {
       _loadedReadings = []; 
       _isInitialized = false; 
       _currentStreak = 0;
+      _maxStreak = 0; 
       _totalReadChapters = 0;
       _weeklyTracker = List.generate(7, (_) => false);
-      _futureReadings = _fetchCalendarFromSupabase(); 
+      _futureReadings = _fetchCalendarAndProfileStats(); 
     });
   }
 
@@ -253,7 +305,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
         final List<Widget> tabs = [
           CalendarTab(readings: _loadedReadings, onToggle: _toggleReadingStatus),
-          // 👈 MODIFICADO: Pasamos el tamaño de fuente y un callback para actualizarlo desde la pestaña
           TodayTab(
             todayReading: todayReading, 
             onToggle: _toggleReadingStatus, 
@@ -267,6 +318,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           ProfileScreen(
             streakCount: _currentStreak, 
+            maxStreak: _maxStreak, 
             totalRead: _totalReadChapters,
             userWeeklyProgress: _weeklyTracker,
             activeProfileId: _activeProfileId,

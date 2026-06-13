@@ -6,6 +6,7 @@ import 'widgets/weekly_chart.dart';
 
 class ProfileScreen extends StatefulWidget {
   final int streakCount;
+  final int maxStreak;
   final int totalRead;
   final List<bool> userWeeklyProgress; 
   final String? activeProfileId;
@@ -15,6 +16,7 @@ class ProfileScreen extends StatefulWidget {
   const ProfileScreen({
     super.key, 
     required this.streakCount, 
+    required this.maxStreak,
     required this.totalRead,
     required this.userWeeklyProgress,
     required this.activeProfileId,
@@ -333,7 +335,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       children: [
                         _buildStatColumn("Racha Actual", "${widget.streakCount} días", "🔥", theme),
                         Container(height: 40, width: 1, color: Colors.grey.withValues(alpha: 0.3)),
-                        _buildStatColumn("Racha Máxima", "${widget.streakCount} días", "👑", theme),
+                        _buildStatColumn("Racha Máxima", "${widget.maxStreak} días", "👑", theme),
                         Container(height: 40, width: 1, color: Colors.grey.withValues(alpha: 0.3)),
                         _buildStatColumn("Total Leídos", "${widget.totalRead} cap.", "📖", theme),
                       ],
