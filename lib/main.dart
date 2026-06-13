@@ -14,7 +14,7 @@ void main() async {
   runApp(const TemploBetelApp());
 }
 
-final supabase = Supabase.instance.client;
+SupabaseClient get supabase => Supabase.instance.client;
 
 class TemploBetelApp extends StatelessWidget {
   const TemploBetelApp({super.key});
