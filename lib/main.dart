@@ -3,6 +3,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/theme.dart';
 import 'screens/home_screen.dart';
 
+final GlobalKey<ScaffoldMessengerState> messengerKey = GlobalKey<ScaffoldMessengerState>();
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
@@ -22,6 +24,7 @@ class TemploBetelApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
+      scaffoldMessengerKey: messengerKey, 
       title: 'Templo Betel',
       debugShowCheckedModeBanner: false,
       theme: BetelTheme.lightTheme,

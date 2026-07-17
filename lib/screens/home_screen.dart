@@ -4,6 +4,7 @@ import '../models/reading_model.dart';
 import 'calendar_tab.dart';
 import 'today_tab.dart';
 import 'profile_screen.dart';
+import 'dashboard_screen.dart'; 
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -55,7 +56,7 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       }).toList();
 
-      if (_activeProfileId != null) {
+      if (_activeProfileId != null && _activeProfileId != 'admin') {
         final progressResponse = await supabase
             .from('user_progress')
             .select('reading_id')
@@ -262,14 +263,20 @@ class _HomeScreenState extends State<HomeScreen> {
   void _onLoginOrRegisterSuccess(String profileId) {
     setState(() {
       _activeProfileId = profileId;
-      _isInitialized = false; 
-      _futureReadings = _fetchCalendarAndProfileStats(); 
+      if (profileId == 'admin') {
+        _currentIndex = 1; 
+      } else {
+        _currentIndex = 1;
+        _isInitialized = false; 
+        _futureReadings = _fetchCalendarAndProfileStats(); 
+      }
     });
   }
 
   void _onLogout() {
     setState(() {
       _activeProfileId = null;
+      _currentIndex = 1;
       _loadedReadings = []; 
       _isInitialized = false; 
       _currentStreak = 0;
@@ -283,6 +290,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isAdmin = _activeProfileId == 'admin';
 
     return FutureBuilder<List<DevotionalReading>>(
       future: _futureReadings,
@@ -303,29 +311,54 @@ class _HomeScreenState extends State<HomeScreen> {
               : DevotionalReading(id: 'vacioso', date: DateTime.now(), bookAndChapter: "Sin lectura asignada"),
         );
 
-        final List<Widget> tabs = [
-          CalendarTab(readings: _loadedReadings, onToggle: _toggleReadingStatus),
-          TodayTab(
-            todayReading: todayReading, 
-            onToggle: _toggleReadingStatus, 
-            streakCount: _currentStreak,
-            currentFontSize: _bibleFontSize,
-            onFontSizeChanged: (newSize) {
-              setState(() {
-                _bibleFontSize = newSize;
-              });
-            },
-          ),
-          ProfileScreen(
-            streakCount: _currentStreak, 
-            maxStreak: _maxStreak, 
-            totalRead: _totalReadChapters,
-            userWeeklyProgress: _weeklyTracker,
-            activeProfileId: _activeProfileId,
-            onAuthChanged: _onLoginOrRegisterSuccess,
-            onLogout: _onLogout,
-          ),
-        ];
+        final List<Widget> tabs = isAdmin
+            ? [
+                ProfileScreen(
+                  streakCount: _currentStreak, 
+                  maxStreak: _maxStreak, 
+                  totalRead: _totalReadChapters,
+                  userWeeklyProgress: _weeklyTracker,
+                  activeProfileId: _activeProfileId,
+                  onAuthChanged: _onLoginOrRegisterSuccess,
+                  onLogout: _onLogout,
+                ),
+                const DashboardScreen(), 
+              ]
+            : [
+                CalendarTab(readings: _loadedReadings, onToggle: _toggleReadingStatus),
+                TodayTab(
+                  todayReading: todayReading, 
+                  onToggle: _toggleReadingStatus, 
+                  streakCount: _currentStreak,
+                  currentFontSize: _bibleFontSize,
+                  onFontSizeChanged: (newSize) {
+                    setState(() {
+                      _bibleFontSize = newSize;
+                    });
+                  },
+                ),
+                ProfileScreen(
+                  streakCount: _currentStreak, 
+                  maxStreak: _maxStreak, 
+                  totalRead: _totalReadChapters,
+                  userWeeklyProgress: _weeklyTracker,
+                  activeProfileId: _activeProfileId,
+                  onAuthChanged: _onLoginOrRegisterSuccess,
+                  onLogout: _onLogout,
+                ),
+              ];
+
+        // Generamos los items del menú dinámicamente con el mismo tamaño que la lista de pestañas
+        final List<BottomNavigationBarItem> navigationItems = isAdmin
+            ? const [
+                BottomNavigationBarItem(icon: Icon(Icons.person_pin), label: 'Perfil Admin'),
+                BottomNavigationBarItem(icon: Icon(Icons.dashboard_rounded), label: 'Dashboard'),
+              ]
+            : const [
+                BottomNavigationBarItem(icon: Icon(Icons.grid_on), label: 'Calendario'),
+                BottomNavigationBarItem(icon: Icon(Icons.menu_book), label: 'Hoy'),
+                BottomNavigationBarItem(icon: Icon(Icons.person_pin), label: 'Perfil'),
+              ];
 
         return Scaffold(
           body: SafeArea(
@@ -347,11 +380,7 @@ class _HomeScreenState extends State<HomeScreen> {
             selectedItemColor: theme.primaryColor,
             unselectedItemColor: Colors.grey,
             type: BottomNavigationBarType.fixed,
-            items: const [
-              BottomNavigationBarItem(icon: Icon(Icons.grid_on), label: 'Calendario'),
-              BottomNavigationBarItem(icon: Icon(Icons.menu_book), label: 'Hoy'),
-              BottomNavigationBarItem(icon: Icon(Icons.person_pin), label: 'Perfil'),
-            ],
+            items: navigationItems,
           ),
         );
       },
