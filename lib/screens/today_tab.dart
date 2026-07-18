@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_tts/flutter_tts.dart';
 import '../models/reading_model.dart';
 import 'dart:js' as js;
+import 'package:flutter_tts/flutter_tts.dart';
 
 class TodayTab extends StatefulWidget {
   final DevotionalReading todayReading;
