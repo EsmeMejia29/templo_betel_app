@@ -1,5 +1,8 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../main.dart';
 import 'widgets/streak_badge.dart';
 import 'widgets/weekly_chart.dart';
@@ -37,16 +40,66 @@ class _ProfileScreenState extends State<ProfileScreen> {
   bool _isLoginMode = true;
   bool _isLoading = false;
   String _displayName = "Usuario";
+  bool _isAuthHandled = false;
 
-  // Lista dinámica que almacenará los perfiles guardados localmente en este dispositivo
   List<Map<String, String>> _savedProfiles = [];
+  StreamSubscription<AuthState>? _authSubscription;
 
   @override
   void initState() {
     super.initState();
-    _loadSavedProfilesLocal(); // Carga las cuentas recordadas al iniciar
+    _loadSavedProfilesLocal();
+
     if (widget.activeProfileId != null) {
       _loadProfileData();
+      return;
+    }
+
+    final existingSession = supabase.auth.currentSession;
+    if (existingSession != null) {
+      _handleSuccessfulGoogleAuth(existingSession.user);
+    } else {
+      _authSubscription = supabase.auth.onAuthStateChange.listen((data) {
+        final AuthChangeEvent event = data.event;
+        final Session? session = data.session;
+
+        if ((event == AuthChangeEvent.signedIn || event == AuthChangeEvent.initialSession) &&
+            session != null &&
+            !_isAuthHandled) {
+          _handleSuccessfulGoogleAuth(session.user);
+        }
+      });
+    }
+  }
+
+  Future<void> _handleSuccessfulGoogleAuth(User user) async {
+    if (_isAuthHandled) return;
+    _isAuthHandled = true;
+
+    _authSubscription?.cancel();
+    _authSubscription = null;
+
+    final email = user.email ?? '';
+    final name = user.userMetadata?['full_name'] ?? 
+                 user.userMetadata?['name'] ?? 
+                 (email.isNotEmpty ? email.split('@')[0] : 'Usuario');
+
+    try {
+      await supabase.from('profiles').upsert({
+        'id': user.id,
+        'email': email,
+        'full_name': name,
+      });
+    } catch (_) {}
+
+    await _saveProfileLocally(user.id, name);
+
+    if (mounted) {
+      setState(() {
+        _displayName = name;
+        _isLoading = false;
+      });
+      widget.onAuthChanged(user.id);
     }
   }
 
@@ -58,31 +111,38 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
   }
 
-  // Carga las cuentas que previamente iniciaron sesión en esta máquina/móvil
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    _phoneController.dispose();
+    _passwordController.dispose();
+    _nameController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadSavedProfilesLocal() async {
     final prefs = await SharedPreferences.getInstance();
     final List<String> rawList = prefs.getStringList('saved_profiles_keys') ?? [];
     
     List<Map<String, String>> profiles = [];
     for (String rawUser in rawList) {
-      // El formato guardado es "id||name"
       final parts = rawUser.split('||');
       if (parts.length == 2) {
         profiles.add({'id': parts[0], 'name': parts[1]});
       }
     }
-    setState(() {
-      _savedProfiles = profiles;
-    });
+    if (mounted) {
+      setState(() {
+        _savedProfiles = profiles;
+      });
+    }
   }
 
-  // Guarda una cuenta en el historial local tras un inicio de sesión exitoso
   Future<void> _saveProfileLocally(String id, String name) async {
     final prefs = await SharedPreferences.getInstance();
     final List<String> rawList = prefs.getStringList('saved_profiles_keys') ?? [];
     
     final String entry = "$id||$name";
-    // Evitamos duplicar el mismo registro en la lista
     if (!rawList.contains(entry)) {
       rawList.add(entry);
       await prefs.setStringList('saved_profiles_keys', rawList);
@@ -98,11 +158,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
           .eq('id', widget.activeProfileId!)
           .maybeSingle();
           
-      if (response != null && response['full_name'] != null) {
+      if (response != null && response['full_name'] != null && mounted) {
         setState(() {
           _displayName = response['full_name'];
         });
-        // Si ya está adentro, nos aseguramos de que su cuenta quede recordada localmente
         _saveProfileLocally(widget.activeProfileId!, response['full_name']);
       }
     } catch (_) {}
@@ -142,13 +201,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
           throw Exception("Número de teléfono o contraseña incorrectos.");
         }
 
-        // Guardamos de forma automática en la memoria del dispositivo
         await _saveProfileLocally(response['id'], response['full_name']);
 
-        widget.onAuthChanged(response['id']);
-        setState(() {
-          _displayName = response['full_name'];
-        });
+        if (mounted) {
+          setState(() {
+            _displayName = response['full_name'];
+          });
+          widget.onAuthChanged(response['id']);
+        }
       } else {
         final insertResponse = await supabase.from('profiles').insert({
           'phone': phone,
@@ -156,24 +216,50 @@ class _ProfileScreenState extends State<ProfileScreen> {
           'full_name': _nameController.text.trim(),
         }).select().single();
 
-        // Guardamos de forma automática la cuenta recién creada
         await _saveProfileLocally(insertResponse['id'], insertResponse['full_name']);
 
-        widget.onAuthChanged(insertResponse['id']);
-        setState(() {
-          _displayName = insertResponse['full_name'];
-        });
+        if (mounted) {
+          setState(() {
+            _displayName = insertResponse['full_name'];
+          });
+          widget.onAuthChanged(insertResponse['id']);
+        }
       }
       
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(_isLoginMode ? "Sesión iniciada" : "¡Registro completado al instante!"))
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(_isLoginMode ? "Sesión iniciada" : "¡Registro completado al instante!"))
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(e.toString().replaceAll("Exception:", "")), backgroundColor: Colors.red)
+        );
+      }
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _handleGoogleSignIn() async {
+    setState(() => _isLoading = true);
+    try {
+      await supabase.auth.signInWithOAuth(
+        OAuthProvider.google,
+        redirectTo: kIsWeb ? null : 'io.supabase.flutterquickstart://login-callback/',
+        queryParams: {
+          'prompt': 'select_account',
+        },
       );
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString().replaceAll("Exception:", "")), backgroundColor: Colors.red)
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Error al iniciar con Google: $e"), backgroundColor: Colors.red),
+        );
+      }
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -182,7 +268,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
     final theme = Theme.of(context);
     final isSessionActive = widget.activeProfileId != null;
 
-    // VISTA 1: PANTALLA DE INGRESO / REGISTRO
     if (!isSessionActive) {
       return Scaffold(
         body: SafeArea(
@@ -220,7 +305,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                     border: OutlineInputBorder(),
                                   ),
                                   textCapitalization: TextCapitalization.words,
-                                  validator: (value) => value == null || value.isEmpty ? "Por favor ingresa tu nombre" : null,
+                                  validator: (value) => value == null || value.trim().isEmpty ? "Por favor ingresa tu nombre" : null,
                                 ),
                                 const SizedBox(height: 16),
                               ],
@@ -253,6 +338,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 validator: (value) => value == null || value.length < 6 ? "La contraseña debe tener mínimo 6 caracteres" : null,
                               ),
                               const SizedBox(height: 24),
+                              
                               _isLoading
                                   ? const CircularProgressIndicator()
                                   : ElevatedButton(
@@ -265,6 +351,39 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                       onPressed: _handleAuth,
                                       child: Text(_isLoginMode ? "Iniciar Sesión" : "Registrarse", style: const TextStyle(fontWeight: FontWeight.bold)),
                                     ),
+                              const SizedBox(height: 16),
+
+                              Row(
+                                children: [
+                                  Expanded(child: Divider(color: Colors.grey.shade400)),
+                                  Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                                    child: Text("O", style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
+                                  ),
+                                  Expanded(child: Divider(color: Colors.grey.shade400)),
+                                ],
+                              ),
+                              const SizedBox(height: 16),
+
+                              OutlinedButton.icon(
+                                style: OutlinedButton.styleFrom(
+                                  minimumSize: const Size.fromHeight(50),
+                                  side: BorderSide(color: Colors.grey.shade300),
+                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                                ),
+                                icon: Image.network(
+                                  'https://fonts.gstatic.com/s/i/productlogos/googleg/v6/24px.svg',
+                                  height: 20,
+                                  errorBuilder: (_, __, ___) => const Icon(Icons.g_mobiledata, size: 24, color: Colors.blue),
+                                ),
+                                label: Text(
+                                  _isLoginMode ? "Continuar con Google" : "Registrarse con Google",
+                                  style: const TextStyle(color: Colors.black87, fontWeight: FontWeight.w600),
+                                ),
+                                onPressed: _isLoading ? null : _handleGoogleSignIn,
+                              ),
+
+                              const SizedBox(height: 12),
                               TextButton(
                                 onPressed: () {
                                   _phoneController.clear();
@@ -280,7 +399,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       ),
                     ),
                     
-                    // SECCIÓN COMPLETAMENTE DINÁMICA: CUENTAS CAPTURADAS AUTOMÁTICAMENTE
                     if (_savedProfiles.isNotEmpty) ...[
                       const SizedBox(height: 24),
                       const Divider(),
@@ -303,7 +421,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                             label: Text(profile['name']!, style: const TextStyle(fontWeight: FontWeight.bold)),
                             onPressed: () {
                               setState(() => _displayName = profile['name']!);
-                              // Dispara el login con el UUID legítimo recuperado de la BD en el pasado
                               widget.onAuthChanged(profile['id']!);
                             },
                           );
@@ -319,7 +436,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       );
     }
 
-    // VISTA 2: PANEL DEL PERFIL ACTIVO
     return Scaffold(
       body: SafeArea(
         child: SingleChildScrollView(
@@ -370,7 +486,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     side: const BorderSide(color: Colors.red),
                     minimumSize: const Size.fromHeight(45),
                   ),
-                  onPressed: widget.onLogout,
+                  onPressed: () async {
+                    await supabase.auth.signOut();
+                    widget.onLogout();
+                  },
                   icon: const Icon(Icons.logout),
                   label: const Text("Cerrar Sesión"),
                 )
