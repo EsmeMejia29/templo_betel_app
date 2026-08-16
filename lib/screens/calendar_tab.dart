@@ -32,6 +32,7 @@ class _CalendarTabState extends State<CalendarTab> {
   ];
 
   static const Color _primaryGreen = Color(0xFF0C3D23);
+  static const Color _completedGreen = Color(0xFFE2EFE4);
   static const Color _goldAccent = Color(0xFF997D3C);
   static const Color _bgColor = Color(0xFFF3F6F1);
 
@@ -312,8 +313,16 @@ class _CalendarTabState extends State<CalendarTab> {
             final isToday = cellDate.isAtSameMomentAs(today);
             final isFuture = cellDate.isAfter(today);
             final reading = dayReadingMap[dayNum];
+            final isCompleted = reading != null && reading.isCompleted;
             final hasEvent = reading != null && reading.specialEvent != null && reading.specialEvent!.isNotEmpty;
-            final hasDot = (reading != null && reading.isCompleted) || hasEvent;
+            final hasDot = isCompleted || hasEvent;
+
+            Color backgroundColor = Colors.white;
+            if (isCompleted) {
+              backgroundColor = _completedGreen;
+            } else if (isToday) {
+              backgroundColor = const Color(0xFFE5EDE6);
+            }
 
             return InkWell(
               borderRadius: BorderRadius.circular(10),
@@ -322,7 +331,7 @@ class _CalendarTabState extends State<CalendarTab> {
                   : null,
               child: Container(
                 decoration: BoxDecoration(
-                  color: isToday ? const Color(0xFFE5EDE6) : Colors.white,
+                  color: backgroundColor,
                   borderRadius: BorderRadius.circular(10),
                   border: isToday
                       ? Border.all(color: _primaryGreen, width: 1.6)
@@ -340,7 +349,7 @@ class _CalendarTabState extends State<CalendarTab> {
                           fontWeight: FontWeight.bold,
                           color: isFuture
                               ? Colors.grey.shade400
-                              : (isToday ? _primaryGreen : Colors.black87),
+                              : ((isToday || isCompleted) ? _primaryGreen : Colors.black87),
                         ),
                       ),
                     ),
@@ -361,7 +370,7 @@ class _CalendarTabState extends State<CalendarTab> {
                           height: 4.5,
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
-                            color: isToday ? _primaryGreen : _goldAccent,
+                            color: (isToday || isCompleted) ? _primaryGreen : _goldAccent,
                           ),
                         ),
                       ),
