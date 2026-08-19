@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../../main.dart';
 import '../models/reading_model.dart';
+import '../services/devotional_service.dart';
 import 'calendar_tab.dart';
 import 'today_tab.dart';
 import 'profile_screen.dart';
@@ -32,6 +33,24 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _futureReadings = _fetchCalendarAndProfileStats();
+    _probarConexionDevocional(); // <-- Prueba de conexión añadida
+  }
+
+  Future<void> _probarConexionDevocional() async {
+    final devotionalService = DevotionalService();
+    try {
+      print('=== INICIANDO PRUEBA DEVOCIONAL ===');
+      
+      final indice = await devotionalService.leerIndice();
+      print('Índice obtenido: $indice');
+
+      final capitulo = await devotionalService.leerCapitulo('Genesis', 1);
+      print('Capítulo obtenido: $capitulo');
+      
+      print('=== PRUEBA COMPLETADA CON ÉXITO ===');
+    } catch (e) {
+      print('=== ERROR EN PRUEBA DEVOCIONAL ===: $e');
+    }
   }
 
   Future<List<DevotionalReading>> _fetchCalendarAndProfileStats() async {
@@ -348,7 +367,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
               ];
 
-        // Generamos los items del menú dinámicamente con el mismo tamaño que la lista de pestañas
         final List<BottomNavigationBarItem> navigationItems = isAdmin
             ? const [
                 BottomNavigationBarItem(icon: Icon(Icons.person_pin), label: 'Perfil Admin'),
