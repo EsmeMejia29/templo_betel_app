@@ -6,11 +6,17 @@ import '../services/devotional_service.dart';
 
 class AIService {
   static const String _apiKey = String.fromEnvironment('GEMINI_API_KEY');
-  static const String _baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent';
 
   static Future<Map<String, String>> extraerVersiculoClave(String chapterContent) async {
+    if (_apiKey.isEmpty) {
+      return {'versiculo': '', 'referencia': '', 'error': 'API Key no configurada.'};
+    }
+
     try {
-      final url = Uri.parse(_baseUrl);
+      // Pasamos la clave directamente en el parámetro ?key=
+      final url = Uri.parse(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$_apiKey',
+      );
 
       final prompt = """
 Analiza el siguiente capítulo de la Biblia. Identifica el versículo más importante o representativo de todo el texto provisto.
@@ -29,10 +35,7 @@ $chapterContent
 
       final response = await http.post(
         url,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-goog-api-key': _apiKey, 
-        },
+        headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'contents': [
             {
@@ -79,8 +82,15 @@ $chapterContent
   }
 
   static Future<Map<String, dynamic>> generarCuestionario(String chapterContent, String bookAndChapter) async {
+    if (_apiKey.isEmpty) {
+      return {'preguntas': [], 'error': 'API Key no configurada.'};
+    }
+
     try {
-      final url = Uri.parse(_baseUrl);
+      // Pasamos la clave directamente en el parámetro ?key=
+      final url = Uri.parse(
+        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$_apiKey',
+      );
 
       final prompt = """
 Eres un maestro bíblico didáctico y divertido. Crea un cuestionario de recapitulación de 3 preguntas de opción múltiple basado exclusivamente en el siguiente texto de la Biblia correspondiente a $bookAndChapter.
@@ -107,10 +117,7 @@ $chapterContent
 
       final response = await http.post(
         url,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-goog-api-key': _apiKey, 
-        },
+        headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           'contents': [
             {
