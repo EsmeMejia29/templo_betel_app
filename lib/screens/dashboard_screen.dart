@@ -5,7 +5,7 @@ import '../../main.dart';
 import '../services/devotional_service.dart';
 
 class AIService {
-  static const String _apiKey = 'AQ.Ab8RN6KhSERao1wC8UWxIioL6HxK8zQG9PFhIAAQ1_v_xthJ2g'; 
+  static const String _apiKey = String.fromEnvironment('GEMINI_API_KEY');
   static const String _baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent';
 
   static Future<Map<String, String>> extraerVersiculoClave(String chapterContent) async {
