@@ -89,6 +89,7 @@ class _TodayTabState extends State<TodayTab> {
     final hasEvent = widget.todayReading.specialEvent != null && widget.todayReading.specialEvent!.isNotEmpty;
     final hasVerse = widget.todayReading.dailyVerse != null && widget.todayReading.dailyVerse!.isNotEmpty;
     final hasContent = widget.todayReading.chapterContent != null && widget.todayReading.chapterContent!.isNotEmpty;
+    final hasQuiz = widget.todayReading.quiz != null && widget.todayReading.quiz!.isNotEmpty;
 
     final readingDate = widget.todayReading.date;
     final nombreDia = _diasSemana[readingDate.weekday % 7]; 
@@ -301,8 +302,215 @@ class _TodayTabState extends State<TodayTab> {
                 ),
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 20),
           ],
+          if (hasQuiz) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: const Color(0xFF6C5CE7).withOpacity(0.08),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: const Color(0xFF6C5CE7).withOpacity(0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.sports_esports_rounded, color: Color(0xFF6C5CE7)),
+                      SizedBox(width: 8),
+                      Text(
+                        "¡Pon a prueba lo aprendido!",
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF6C5CE7)),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  const Text(
+                    "Responde el cuestionario interactivo de este capítulo para recapitular tu devocional.",
+                    style: TextStyle(fontSize: 13, color: Colors.black87),
+                  ),
+                  const SizedBox(height: 14),
+                  SizedBox(
+                    width: double.infinity,
+                    height: 46,
+                    child: ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF6C5CE7),
+                        foregroundColor: Colors.white,
+                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      ),
+                      onPressed: () {
+                        showModalBottomSheet(
+                          context: context,
+                          isScrollControlled: true,
+                          shape: const RoundedRectangleBorder(
+                            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                          ),
+                          builder: (context) => _QuizViewerModal(
+                            preguntas: widget.todayReading.quiz!,
+                            titulo: widget.todayReading.bookAndChapter,
+                          ),
+                        );
+                      },
+                      icon: const Icon(Icons.play_arrow_rounded),
+                      label: const Text("JUGAR CUESTIONARIO 🎯", style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+          const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+}
+
+class _QuizViewerModal extends StatefulWidget {
+  final List<dynamic> preguntas;
+  final String titulo;
+
+  const _QuizViewerModal({required this.preguntas, required this.titulo});
+
+  @override
+  State<_QuizViewerModal> createState() => _QuizViewerModalState();
+}
+
+class _QuizViewerModalState extends State<_QuizViewerModal> {
+  final Map<int, int> _respuestasSeleccionadas = {};
+  int _aciertos = 0;
+  bool _revisado = false;
+
+  void _evaluarRespuestas() {
+    int total = 0;
+    for (int i = 0; i < widget.preguntas.length; i++) {
+      final correcta = widget.preguntas[i]['respuesta_correcta'] ?? 0;
+      if (_respuestasSeleccionadas[i] == correcta) total++;
+    }
+    setState(() {
+      _aciertos = total;
+      _revisado = true;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.85,
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  'Cuestionario: ${widget.titulo}',
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+            ],
+          ),
+          if (_revisado)
+            Container(
+              margin: const EdgeInsets.symmetric(vertical: 10),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: _aciertos == widget.preguntas.length ? Colors.green[50] : Colors.amber[50],
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: _aciertos == widget.preguntas.length ? Colors.green : Colors.amber),
+              ),
+              child: Row(
+                children: [
+                  Icon(_aciertos == widget.preguntas.length ? Icons.celebration : Icons.stars,
+                      color: _aciertos == widget.preguntas.length ? Colors.green : Colors.amber[800]),
+                  const SizedBox(width: 10),
+                  Text('¡Puntaje obtenido: $_aciertos / ${widget.preguntas.length}!',
+                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                ],
+              ),
+            ),
+          const Divider(),
+          Expanded(
+            child: ListView.builder(
+              itemCount: widget.preguntas.length,
+              itemBuilder: (context, index) {
+                final item = widget.preguntas[index];
+                final List opciones = item['opciones'] ?? [];
+                final int correcta = item['respuesta_correcta'] ?? 0;
+                final seleccionada = _respuestasSeleccionadas[index];
+
+                return Card(
+                  margin: const EdgeInsets.only(bottom: 16),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  child: Padding(
+                    padding: const EdgeInsets.all(14.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('${index + 1}. ${item['pregunta']}',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        const SizedBox(height: 10),
+                        ...List.generate(opciones.length, (opcIndex) {
+                          Color? colorFondo;
+                          if (_revisado) {
+                            if (opcIndex == correcta) colorFondo = Colors.green.withOpacity(0.2);
+                            else if (seleccionada == opcIndex) colorFondo = Colors.red.withOpacity(0.2);
+                          }
+                          return Container(
+                            margin: const EdgeInsets.only(bottom: 6),
+                            decoration: BoxDecoration(
+                              color: colorFondo,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: seleccionada == opcIndex ? const Color(0xFF6C5CE7) : Colors.grey.shade300,
+                              ),
+                            ),
+                            child: RadioListTile<int>(
+                              dense: true,
+                              value: opcIndex,
+                              groupValue: _respuestasSeleccionadas[index],
+                              title: Text(opciones[opcIndex].toString()),
+                              onChanged: _revisado ? null : (val) => setState(() => _respuestasSeleccionadas[index] = val!),
+                            ),
+                          );
+                        }),
+                        if (_revisado && item['explicacion'] != null)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 8.0),
+                            child: Text('💡 ${item['explicacion']}',
+                                style: TextStyle(fontSize: 12, color: Colors.grey[700], fontStyle: FontStyle.italic)),
+                          ),
+                      ],
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          SizedBox(
+            width: double.infinity,
+            height: 48,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF6C5CE7),
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              onPressed: _respuestasSeleccionadas.length < widget.preguntas.length
+                  ? null
+                  : (_revisado ? () => Navigator.pop(context) : _evaluarRespuestas),
+              child: Text(_revisado ? 'Cerrar Juego' : 'Comprobar Respuestas',
+                  style: const TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ),
         ],
       ),
     );

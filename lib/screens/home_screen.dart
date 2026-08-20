@@ -33,19 +33,39 @@ class _HomeScreenState extends State<HomeScreen> {
   void initState() {
     super.initState();
     _futureReadings = _fetchCalendarAndProfileStats();
-    _probarConexionDevocional(); // <-- Prueba de conexión añadida
+    _probarConexionDevocional();
   }
 
   Future<void> _probarConexionDevocional() async {
     final devotionalService = DevotionalService();
     try {
-      print('=== INICIANDO PRUEBA DEVOCIONAL ===');
+      print('=== INICIANDO PRUEBA DEVOCIONAL Y ACTIVIDADES ===');
       
-      final indice = await devotionalService.leerIndice();
-      print('Índice obtenido: $indice');
+      final int anio = DateTime.now().year;
+      final int mes = DateTime.now().month;
+      final int dia = DateTime.now().day;
 
-      final capitulo = await devotionalService.leerCapitulo('Genesis', 1);
-      print('Capítulo obtenido: $capitulo');
+      final planMes = await devotionalService.leerPlanMes(anio, mes);
+      print('Plan completo del mes ($anio-$mes): $planMes');
+
+      if (planMes != null && planMes.containsKey('days')) {
+        final daysMap = planMes['days'] as Map<String, dynamic>? ?? {};
+        final datosHoy = daysMap[dia.toString()];
+
+        if (datosHoy != null) {
+          print('--- DATOS DEL DÍA $dia ---');
+          print('Actividad del día: ${datosHoy['activity']}');
+          print('Versículo clave: ${datosHoy['keyVerse']}');
+          print('Texto del capítulo: ${datosHoy['chapterText'] != null ? "Disponible" : "No asignado"}');
+        } else {
+          print('No hay actividad ni lectura configurada para el día $dia de este mes.');
+        }
+      } else {
+        print('No se encontró plan configurado para este mes ($anio-$mes).');
+      }
+
+      final capitulo = await devotionalService.leerCapitulo('1 Reyes', 18);
+      print('Capítulo 1 Reyes 18: $capitulo');
       
       print('=== PRUEBA COMPLETADA CON ÉXITO ===');
     } catch (e) {
@@ -71,6 +91,7 @@ class _HomeScreenState extends State<HomeScreen> {
           dailyVerse: reading.dailyVerse,
           dailyVerseRef: reading.dailyVerseRef,
           chapterContent: reading.chapterContent,
+          quiz: reading.quiz,
           isCompleted: false, 
         );
       }).toList();
@@ -268,7 +289,7 @@ class _HomeScreenState extends State<HomeScreen> {
       );
 
     } catch (error) {
-      print("Error de sincronización con Supabase: $error");
+      debugPrint("Error de sincronización con Supabase: $error");
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

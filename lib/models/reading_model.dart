@@ -6,6 +6,7 @@ class DevotionalReading {
   final String? dailyVerse;
   final String? dailyVerseRef;
   final String? chapterContent;
+  final List<dynamic>? quiz;
   bool isCompleted;
 
   DevotionalReading({
@@ -16,6 +17,7 @@ class DevotionalReading {
     this.dailyVerse,
     this.dailyVerseRef,
     this.chapterContent,
+    this.quiz,
     this.isCompleted = false,
   });
 
@@ -28,6 +30,8 @@ class DevotionalReading {
       dailyVerse: json['daily_verse'],
       dailyVerseRef: json['daily_verse_ref'],
       chapterContent: json['chapter_content'],
+      quiz: json['quiz'] is List ? json['quiz'] : null,
+      isCompleted: false,
     );
   }
 }
