@@ -6,16 +6,16 @@ import '../services/devotional_service.dart';
 
 class AIService {
   static const String _apiKey = String.fromEnvironment('GEMINI_API_KEY');
+  static const String _model = 'gemini-3.6-flash';
 
   static Future<Map<String, String>> extraerVersiculoClave(String chapterContent) async {
     if (_apiKey.isEmpty) {
-      return {'versiculo': '', 'referencia': '', 'error': 'API Key no configurada.'};
+      return {'versiculo': '', 'referencia': '', 'error': 'API Key no detectada en la configuración.'};
     }
 
     try {
-      // Pasamos la clave directamente en el parámetro ?key=
       final url = Uri.parse(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$_apiKey',
+        'https://generativelanguage.googleapis.com/v1beta/models/$_model:generateContent?key=$_apiKey',
       );
 
       final prompt = """
@@ -83,13 +83,12 @@ $chapterContent
 
   static Future<Map<String, dynamic>> generarCuestionario(String chapterContent, String bookAndChapter) async {
     if (_apiKey.isEmpty) {
-      return {'preguntas': [], 'error': 'API Key no configurada.'};
+      return {'preguntas': [], 'error': 'API Key no detectada en la configuración.'};
     }
 
     try {
-      // Pasamos la clave directamente en el parámetro ?key=
       final url = Uri.parse(
-        'https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=$_apiKey',
+        'https://generativelanguage.googleapis.com/v1beta/models/$_model:generateContent?key=$_apiKey',
       );
 
       final prompt = """
