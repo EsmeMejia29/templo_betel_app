@@ -63,17 +63,15 @@ class _TodayTabState extends State<TodayTab> {
   void _initTts() async {
     _flutterTts = FlutterTts();
 
-    try {
-      await _flutterTts.setLanguage("es-ES");
-    } catch (_) {
-      try {
-        await _flutterTts.setLanguage("es");
-      } catch (_) {}
+    // Forzar a flutter_tts a esperar la inicialización web
+    if (kIsWeb) {
+      await _flutterTts.awaitSpeakCompletion(true);
+      await _flutterTts.setEngine("browser"); // Utiliza el motor nativo del navegador
     }
 
+    await _flutterTts.setLanguage("es");
     await _flutterTts.setVolume(1.0);
     await _flutterTts.setPitch(1.0);
-    await _applySpeechRate();
 
     _flutterTts.setStartHandler(() {
       if (mounted) setState(() => _isPlaying = true);
@@ -88,18 +86,8 @@ class _TodayTabState extends State<TodayTab> {
     });
 
     _flutterTts.setErrorHandler((msg) {
-      debugPrint("Error TTS: $msg");
+      debugPrint("TTS Error: $msg");
       _stopAudio();
-    });
-
-    // Subrayado nativo para Android / iOS
-    _flutterTts.setProgressHandler((String text, int start, int end, String word) {
-      if (mounted && _isPlaying && !kIsWeb) {
-        setState(() {
-          _currentWordStart = start;
-          _currentWordEnd = end;
-        });
-      }
     });
   }
 
@@ -158,11 +146,11 @@ class _TodayTabState extends State<TodayTab> {
       _currentWordEnd = 0;
     });
 
-    await _applySpeechRate();
+    final rate = _speedRates[_speedIndex];
+    await _flutterTts.setSpeechRate(kIsWeb ? rate : 0.5 * rate);
 
-    // En Web calculamos el subrayado por palabras
     if (kIsWeb) {
-      _startWebHighlight(cleanText, _speedRates[_speedIndex]);
+      _startWebHighlight(cleanText, rate);
     }
 
     await _flutterTts.speak(cleanText);
