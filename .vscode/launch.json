@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "templo_betel_app",
+      "name": "Templo Betel App",
       "request": "launch",
       "type": "dart",
       "args": [
