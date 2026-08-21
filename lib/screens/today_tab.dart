@@ -1,9 +1,13 @@
+// ignore_for_file: avoid_web_libraries_in_flutter, deprecated_member_use
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import '../models/reading_model.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
+// Necesario para controlar el bug de Chrome móvil en Web
+import 'dart:js' as js;
 
 class TodayTab extends StatefulWidget {
   final DevotionalReading todayReading;
@@ -45,6 +49,10 @@ class _TodayTabState extends State<TodayTab> {
   int _currentWordEnd = 0;
   Timer? _highlightTimer;
 
+  // Cola de oraciones para evitar que Chrome móvil lo descarte por ser largo
+  List<String> _textChunks = [];
+  int _currentChunkIndex = 0;
+
   static const List<String> _meses = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
@@ -60,25 +68,24 @@ class _TodayTabState extends State<TodayTab> {
     _initTts();
   }
 
-  void _initTts() async {
+  void _initTts() {
     _flutterTts = FlutterTts();
 
-    // Forzar a flutter_tts a esperar la inicialización web
-    if (kIsWeb) {
-      await _flutterTts.awaitSpeakCompletion(true);
-      await _flutterTts.setEngine("browser"); // Utiliza el motor nativo del navegador
-    }
-
-    await _flutterTts.setLanguage("es");
-    await _flutterTts.setVolume(1.0);
-    await _flutterTts.setPitch(1.0);
+    _flutterTts.setLanguage("es-US");
+    _flutterTts.setVolume(1.0);
+    _flutterTts.setPitch(1.0);
+    _flutterTts.setSpeechRate(kIsWeb ? _speedRates[_speedIndex] : 0.5 * _speedRates[_speedIndex]);
 
     _flutterTts.setStartHandler(() {
       if (mounted) setState(() => _isPlaying = true);
     });
 
     _flutterTts.setCompletionHandler(() {
-      _stopAudio();
+      if (kIsWeb && _isPlaying) {
+        _playNextChunk();
+      } else {
+        _stopAudio();
+      }
     });
 
     _flutterTts.setCancelHandler(() {
@@ -89,20 +96,32 @@ class _TodayTabState extends State<TodayTab> {
       debugPrint("TTS Error: $msg");
       _stopAudio();
     });
-  }
 
-  Future<void> _applySpeechRate() async {
-    final multiplier = _speedRates[_speedIndex];
-    if (kIsWeb) {
-      await _flutterTts.setSpeechRate(multiplier);
-    } else {
-      await _flutterTts.setSpeechRate(0.5 * multiplier);
-    }
+    // Subrayado nativo para Android / iOS cuando es app instalada
+    _flutterTts.setProgressHandler((String text, int start, int end, String word) {
+      if (mounted && _isPlaying && !kIsWeb) {
+        setState(() {
+          _currentWordStart = start;
+          _currentWordEnd = end;
+        });
+      }
+    });
   }
 
   void _stopAudio() {
     _highlightTimer?.cancel();
     _highlightTimer = null;
+    _textChunks.clear();
+    _currentChunkIndex = 0;
+
+    if (kIsWeb) {
+      try {
+        js.context.callMethod('eval', [
+          'if (window.speechSynthesis) { window.speechSynthesis.cancel(); }'
+        ]);
+      } catch (_) {}
+    }
+
     _flutterTts.stop();
 
     if (mounted) {
@@ -114,12 +133,13 @@ class _TodayTabState extends State<TodayTab> {
     }
   }
 
-  void _cycleSpeed() async {
+  void _cycleSpeed() {
     setState(() {
       _speedIndex = (_speedIndex + 1) % _speedLabels.length;
     });
 
-    await _applySpeechRate();
+    final rate = _speedRates[_speedIndex];
+    _flutterTts.setSpeechRate(kIsWeb ? rate : 0.5 * rate);
 
     if (_isPlaying && widget.todayReading.chapterContent != null) {
       _stopAudio();
@@ -127,12 +147,41 @@ class _TodayTabState extends State<TodayTab> {
     }
   }
 
-  void _speakText(String rawText) async {
+  void _playNextChunk() {
+    if (_currentChunkIndex < _textChunks.length && _isPlaying) {
+      final chunk = _textChunks[_currentChunkIndex];
+      _currentChunkIndex++;
+      
+      // Despertador de Chrome móvil antes de cada speak
+      if (kIsWeb) {
+        try {
+          js.context.callMethod('eval', [
+            'if (window.speechSynthesis && window.speechSynthesis.paused) { window.speechSynthesis.resume(); }'
+          ]);
+        } catch (_) {}
+      }
+      
+      _flutterTts.speak(chunk);
+    } else {
+      _stopAudio();
+    }
+  }
+
+  void _speakText(String rawText) {
     if (rawText.isEmpty) return;
 
     if (_isPlaying) {
       _stopAudio();
       return;
+    }
+
+    // Despertar el motor de voz de Chrome móvil en el primer toque de usuario
+    if (kIsWeb) {
+      try {
+        js.context.callMethod('eval', [
+          'if (window.speechSynthesis) { window.speechSynthesis.cancel(); window.speechSynthesis.resume(); }'
+        ]);
+      } catch (_) {}
     }
 
     String cleanText = rawText
@@ -146,14 +195,24 @@ class _TodayTabState extends State<TodayTab> {
       _currentWordEnd = 0;
     });
 
-    final rate = _speedRates[_speedIndex];
-    await _flutterTts.setSpeechRate(kIsWeb ? rate : 0.5 * rate);
-
+    // Iniciar subrayado animado
     if (kIsWeb) {
-      _startWebHighlight(cleanText, rate);
+      _startWebHighlight(cleanText, _speedRates[_speedIndex]);
     }
 
-    await _flutterTts.speak(cleanText);
+    // Dividir texto por oraciones/puntos para que Chrome móvil no se congele
+    if (kIsWeb) {
+      _textChunks = cleanText
+          .split(RegExp(r'(?<=[.?!;\n])\s+'))
+          .where((s) => s.trim().isNotEmpty)
+          .toList();
+
+      if (_textChunks.isEmpty) _textChunks = [cleanText];
+      _currentChunkIndex = 0;
+      _playNextChunk();
+    } else {
+      _flutterTts.speak(cleanText);
+    }
   }
 
   void _startWebHighlight(String text, double speedMultiplier) {
@@ -162,16 +221,13 @@ class _TodayTabState extends State<TodayTab> {
     final matches = RegExp(r'\S+').allMatches(text).toList();
     if (matches.isEmpty) return;
 
-    // ~160 palabras por minuto en español
-    final msPerWord = ((60000 / 160) / speedMultiplier).round();
+    // Velocidad calculada de palabras por minuto
+    final msPerWord = ((60000 / 155) / speedMultiplier).round();
     int index = 0;
 
     _highlightTimer = Timer.periodic(Duration(milliseconds: msPerWord), (timer) {
       if (!_isPlaying || index >= matches.length) {
         timer.cancel();
-        if (index >= matches.length) {
-          _stopAudio();
-        }
         return;
       }
 
@@ -356,7 +412,7 @@ class _TodayTabState extends State<TodayTab> {
                 ),
                 Row(
                   children: [
-                    // Botón de velocidad (1.0x, 1.5x, 2.0x)
+                    // Botón de velocidad interactivo (1.0x, 1.5x, 2.0x)
                     InkWell(
                       onTap: _cycleSpeed,
                       borderRadius: BorderRadius.circular(8),
