@@ -6,7 +6,6 @@ import 'package:flutter_tts/flutter_tts.dart';
 import '../models/reading_model.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-// Necesario para controlar el bug de Chrome móvil en Web
 import 'dart:js' as js;
 
 class TodayTab extends StatefulWidget {
@@ -49,7 +48,6 @@ class _TodayTabState extends State<TodayTab> {
   int _currentWordEnd = 0;
   Timer? _highlightTimer;
 
-  // Cola de oraciones para evitar que Chrome móvil lo descarte por ser largo
   List<String> _textChunks = [];
   int _currentChunkIndex = 0;
 
@@ -97,7 +95,7 @@ class _TodayTabState extends State<TodayTab> {
       _stopAudio();
     });
 
-    // Subrayado nativo para Android / iOS cuando es app instalada
+    // Subrayado nativo en Android/iOS cuando es app instalada
     _flutterTts.setProgressHandler((String text, int start, int end, String word) {
       if (mounted && _isPlaying && !kIsWeb) {
         setState(() {
@@ -151,8 +149,7 @@ class _TodayTabState extends State<TodayTab> {
     if (_currentChunkIndex < _textChunks.length && _isPlaying) {
       final chunk = _textChunks[_currentChunkIndex];
       _currentChunkIndex++;
-      
-      // Despertador de Chrome móvil antes de cada speak
+
       if (kIsWeb) {
         try {
           js.context.callMethod('eval', [
@@ -160,7 +157,7 @@ class _TodayTabState extends State<TodayTab> {
           ]);
         } catch (_) {}
       }
-      
+
       _flutterTts.speak(chunk);
     } else {
       _stopAudio();
@@ -175,7 +172,6 @@ class _TodayTabState extends State<TodayTab> {
       return;
     }
 
-    // Despertar el motor de voz de Chrome móvil en el primer toque de usuario
     if (kIsWeb) {
       try {
         js.context.callMethod('eval', [
@@ -195,13 +191,8 @@ class _TodayTabState extends State<TodayTab> {
       _currentWordEnd = 0;
     });
 
-    // Iniciar subrayado animado
     if (kIsWeb) {
-      _startWebHighlight(cleanText, _speedRates[_speedIndex]);
-    }
-
-    // Dividir texto por oraciones/puntos para que Chrome móvil no se congele
-    if (kIsWeb) {
+      _startDynamicWebHighlight(cleanText, _speedRates[_speedIndex]);
       _textChunks = cleanText
           .split(RegExp(r'(?<=[.?!;\n])\s+'))
           .where((s) => s.trim().isNotEmpty)
@@ -215,30 +206,50 @@ class _TodayTabState extends State<TodayTab> {
     }
   }
 
-  void _startWebHighlight(String text, double speedMultiplier) {
+  // Sincronización proporcional a la longitud de palabras y pausas de puntuación
+  void _startDynamicWebHighlight(String text, double speedMultiplier) {
     _highlightTimer?.cancel();
 
     final matches = RegExp(r'\S+').allMatches(text).toList();
     if (matches.isEmpty) return;
 
-    // Velocidad calculada de palabras por minuto
-    final msPerWord = ((60000 / 155) / speedMultiplier).round();
+    // Base por carácter: ~65ms por letra en español a velocidad 1.0x
+    final double msPerChar = 65.0 / speedMultiplier;
     int index = 0;
 
-    _highlightTimer = Timer.periodic(Duration(milliseconds: msPerWord), (timer) {
+    void scheduleNextWord() {
       if (!_isPlaying || index >= matches.length) {
-        timer.cancel();
+        if (index >= matches.length) _stopAudio();
         return;
       }
 
+      final match = matches[index];
+      final word = text.substring(match.start, match.end);
+
       if (mounted) {
         setState(() {
-          _currentWordStart = matches[index].start;
-          _currentWordEnd = matches[index].end;
+          _currentWordStart = match.start;
+          _currentWordEnd = match.end;
         });
       }
+
+      // Tiempo base según tamaño de la palabra
+      double durationMs = (word.length * msPerChar).clamp(160.0 / speedMultiplier, 900.0 / speedMultiplier);
+
+      // Añadir pausas según puntuación para imitar la respiración del locutor
+      if (word.endsWith('.') || word.endsWith('!') || word.endsWith('?')) {
+        durationMs += (320.0 / speedMultiplier);
+      } else if (word.endsWith(',') || word.endsWith(';') || word.endsWith(':')) {
+        durationMs += (160.0 / speedMultiplier);
+      }
+
       index++;
-    });
+      _highlightTimer = Timer(Duration(milliseconds: durationMs.round()), scheduleNextWord);
+    }
+
+    // Pequeño retardo inicial (~220ms) para esperar que el parlante del móvil despierte y empiece a hablar
+    final startDelay = (220.0 / speedMultiplier).round();
+    _highlightTimer = Timer(Duration(milliseconds: startDelay), scheduleNextWord);
   }
 
   @override
@@ -412,7 +423,7 @@ class _TodayTabState extends State<TodayTab> {
                 ),
                 Row(
                   children: [
-                    // Botón de velocidad interactivo (1.0x, 1.5x, 2.0x)
+                    // Botón de velocidad (1.0x, 1.5x, 2.0x)
                     InkWell(
                       onTap: _cycleSpeed,
                       borderRadius: BorderRadius.circular(8),
