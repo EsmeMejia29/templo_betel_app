@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../main.dart';
 import '../models/reading_model.dart';
 import '../services/devotional_service.dart';
@@ -32,8 +33,25 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _checkPersistedSession();
     _futureReadings = _fetchCalendarAndProfileStats();
     _probarConexionDevocional();
+  }
+
+  Future<void> _checkPersistedSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    final savedProfileId = prefs.getString('persisted_active_profile_id');
+    
+    final currentAuthUser = supabase.auth.currentUser;
+    final profileIdToRestore = savedProfileId ?? currentAuthUser?.id;
+
+    if (profileIdToRestore != null && mounted) {
+      setState(() {
+        _activeProfileId = profileIdToRestore;
+        _isInitialized = false;
+        _futureReadings = _fetchCalendarAndProfileStats();
+      });
+    }
   }
 
   Future<void> _probarConexionDevocional() async {
@@ -287,7 +305,11 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  void _onLoginOrRegisterSuccess(String profileId) {
+  void _onLoginOrRegisterSuccess(String profileId) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('persisted_active_profile_id', profileId);
+
+    if (!mounted) return;
     setState(() {
       _activeProfileId = profileId;
       if (profileId == 'admin') {
@@ -300,7 +322,11 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
-  void _onLogout() {
+  void _onLogout() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('persisted_active_profile_id');
+
+    if (!mounted) return;
     setState(() {
       _activeProfileId = null;
       _currentIndex = 1;
@@ -322,10 +348,10 @@ class _HomeScreenState extends State<HomeScreen> {
     return FutureBuilder<List<DevotionalReading>>(
       future: _futureReadings,
       builder: (context, snapshot) {
-        if (snapshot.connectionState == ConnectionState.waiting) {
+        if (snapshot.connectionState == ConnectionState.waiting && !_isInitialized) {
           return const Scaffold(body: Center(child: CircularProgressIndicator()));
         }
-        if (snapshot.hasError) {
+        if (snapshot.hasError && !_isInitialized) {
           return Scaffold(body: Center(child: Text("⚠️ Error: ${snapshot.error}")));
         }
 
