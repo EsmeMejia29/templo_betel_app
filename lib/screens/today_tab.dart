@@ -5,8 +5,6 @@ import 'package:flutter_tts/flutter_tts.dart';
 import '../models/reading_model.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-import 'dart:js' as js;
-
 class TodayTab extends StatefulWidget {
   final DevotionalReading todayReading;
   final Function(DevotionalReading) onToggle;
@@ -34,7 +32,7 @@ class TodayTab extends StatefulWidget {
 }
 
 class _TodayTabState extends State<TodayTab> {
-  FlutterTts? _flutterTts;
+  late FlutterTts _flutterTts;
   bool _isPlaying = false;
 
   // Velocidades: 1.0x, 1.5x, 2.0x
@@ -59,32 +57,44 @@ class _TodayTabState extends State<TodayTab> {
   @override
   void initState() {
     super.initState();
-    if (!kIsWeb) {
-      _initNativeTts();
-    }
+    _initTts();
   }
 
-  void _initNativeTts() {
+  void _initTts() async {
     _flutterTts = FlutterTts();
-    _flutterTts!.setLanguage("es");
-    _flutterTts!.setSpeechRate(0.5);
-    _flutterTts!.setVolume(1.0);
-    _flutterTts!.setPitch(1.0);
 
-    _flutterTts!.setStartHandler(() {
+    try {
+      await _flutterTts.setLanguage("es-ES");
+    } catch (_) {
+      try {
+        await _flutterTts.setLanguage("es");
+      } catch (_) {}
+    }
+
+    await _flutterTts.setVolume(1.0);
+    await _flutterTts.setPitch(1.0);
+    await _applySpeechRate();
+
+    _flutterTts.setStartHandler(() {
       if (mounted) setState(() => _isPlaying = true);
     });
 
-    _flutterTts!.setCompletionHandler(() {
+    _flutterTts.setCompletionHandler(() {
       _stopAudio();
     });
 
-    _flutterTts!.setErrorHandler((msg) {
+    _flutterTts.setCancelHandler(() {
       _stopAudio();
     });
 
-    _flutterTts!.setProgressHandler((String text, int start, int end, String word) {
-      if (mounted && _isPlaying) {
+    _flutterTts.setErrorHandler((msg) {
+      debugPrint("Error TTS: $msg");
+      _stopAudio();
+    });
+
+    // Subrayado nativo para Android / iOS
+    _flutterTts.setProgressHandler((String text, int start, int end, String word) {
+      if (mounted && _isPlaying && !kIsWeb) {
         setState(() {
           _currentWordStart = start;
           _currentWordEnd = end;
@@ -93,19 +103,19 @@ class _TodayTabState extends State<TodayTab> {
     });
   }
 
+  Future<void> _applySpeechRate() async {
+    final multiplier = _speedRates[_speedIndex];
+    if (kIsWeb) {
+      await _flutterTts.setSpeechRate(multiplier);
+    } else {
+      await _flutterTts.setSpeechRate(0.5 * multiplier);
+    }
+  }
+
   void _stopAudio() {
     _highlightTimer?.cancel();
     _highlightTimer = null;
-
-    if (kIsWeb) {
-      try {
-        js.context.callMethod('eval', [
-          'if (window.speechSynthesis) { window.speechSynthesis.cancel(); }'
-        ]);
-      } catch (_) {}
-    } else {
-      _flutterTts?.stop();
-    }
+    _flutterTts.stop();
 
     if (mounted) {
       setState(() {
@@ -116,10 +126,12 @@ class _TodayTabState extends State<TodayTab> {
     }
   }
 
-  void _cycleSpeed() {
+  void _cycleSpeed() async {
     setState(() {
       _speedIndex = (_speedIndex + 1) % _speedLabels.length;
     });
+
+    await _applySpeechRate();
 
     if (_isPlaying && widget.todayReading.chapterContent != null) {
       _stopAudio();
@@ -127,7 +139,7 @@ class _TodayTabState extends State<TodayTab> {
     }
   }
 
-  void _speakText(String rawText) {
+  void _speakText(String rawText) async {
     if (rawText.isEmpty) return;
 
     if (_isPlaying) {
@@ -136,7 +148,7 @@ class _TodayTabState extends State<TodayTab> {
     }
 
     String cleanText = rawText
-        .replaceAll('\n', ' ')
+        .replaceAll('\r', '')
         .replaceAll(RegExp(r'[\$\#\_\@]'), '')
         .trim();
 
@@ -146,62 +158,17 @@ class _TodayTabState extends State<TodayTab> {
       _currentWordEnd = 0;
     });
 
-    final rate = _speedRates[_speedIndex];
+    await _applySpeechRate();
 
+    // En Web calculamos el subrayado por palabras
     if (kIsWeb) {
-      // Iniciar el temporizador de subrayado en Web
-      _startWebHighlightTimer(cleanText, rate);
-
-      // Ejecutar la síntesis de voz nativa del navegador directamente
-      try {
-        final escapedText = cleanText.replaceAll("'", "\\'").replaceAll('"', '\\"');
-        js.context.callMethod('eval', [
-          '''
-          (function() {
-            if (!('speechSynthesis' in window)) return;
-            window.speechSynthesis.cancel();
-            
-            var utter = new SpeechSynthesisUtterance("$escapedText");
-            utter.lang = 'es-ES';
-            utter.rate = $rate;
-            utter.pitch = 1.0;
-            
-            // Buscar voz en español disponible
-            var voices = window.speechSynthesis.getVoices();
-            for (var i = 0; i < voices.length; i++) {
-              if (voices[i].lang.indexOf('es') !== -1) {
-                utter.voice = voices[i];
-                break;
-              }
-            }
-            
-            utter.onend = function() {
-              if (window.flutterTtsOnEnd) window.flutterTtsOnEnd();
-            };
-            
-            utter.onerror = function() {
-              if (window.flutterTtsOnEnd) window.flutterTtsOnEnd();
-            };
-
-            window.speechSynthesis.speak(utter);
-          })();
-          '''
-        ]);
-
-        js.context['flutterTtsOnEnd'] = () {
-          _stopAudio();
-        };
-      } catch (e) {
-        debugPrint("Error TTS Web: $e");
-        _stopAudio();
-      }
-    } else {
-      _flutterTts?.setSpeechRate(rate * 0.5);
-      _flutterTts?.speak(cleanText);
+      _startWebHighlight(cleanText, _speedRates[_speedIndex]);
     }
+
+    await _flutterTts.speak(cleanText);
   }
 
-  void _startWebHighlightTimer(String text, double speedMultiplier) {
+  void _startWebHighlight(String text, double speedMultiplier) {
     _highlightTimer?.cancel();
 
     final matches = RegExp(r'\S+').allMatches(text).toList();
@@ -214,6 +181,9 @@ class _TodayTabState extends State<TodayTab> {
     _highlightTimer = Timer.periodic(Duration(milliseconds: msPerWord), (timer) {
       if (!_isPlaying || index >= matches.length) {
         timer.cancel();
+        if (index >= matches.length) {
+          _stopAudio();
+        }
         return;
       }
 
