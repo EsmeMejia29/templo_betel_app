@@ -37,19 +37,29 @@ class TodayTab extends StatefulWidget {
 class _TodayTabState extends State<TodayTab> {
   late FlutterTts _flutterTts;
   bool _isPlaying = false;
+  bool _isPaused = false;
+  bool _showPlayerBar = false;
 
-  // Velocidades: 1.0x, 1.5x, 2.0x
+  // Identificador de sesión para evitar que eventos de audio cancelado cierren la barra
+  int _playSessionId = 0;
+
+  // Velocidades calibradas para pronunciación natural
   int _speedIndex = 0;
   final List<String> _speedLabels = ["1.0x", "1.5x", "2.0x"];
-  final List<double> _speedRates = [1.0, 1.5, 2.0];
+  final List<double> _webSpeedRates = [1.0, 1.25, 1.45];
+  final List<double> _nativeSpeedRates = [0.5, 0.65, 0.8];
 
-  // Subrayado
+  // Subrayado y posición
   int _currentWordStart = 0;
   int _currentWordEnd = 0;
+  int _currentWordIndex = 0;
+  double? _draggedWordIndex;
+  List<RegExpMatch> _wordMatches = [];
   Timer? _highlightTimer;
 
   List<String> _textChunks = [];
   int _currentChunkIndex = 0;
+  String _cachedCleanText = "";
 
   static const List<String> _meses = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -66,36 +76,43 @@ class _TodayTabState extends State<TodayTab> {
     _initTts();
   }
 
+  double get _currentRate => kIsWeb ? _webSpeedRates[_speedIndex] : _nativeSpeedRates[_speedIndex];
+
   void _initTts() {
     _flutterTts = FlutterTts();
 
     _flutterTts.setLanguage("es-US");
     _flutterTts.setVolume(1.0);
     _flutterTts.setPitch(1.0);
-    _flutterTts.setSpeechRate(kIsWeb ? _speedRates[_speedIndex] : 0.5 * _speedRates[_speedIndex]);
+    _flutterTts.setSpeechRate(_currentRate);
 
     _flutterTts.setStartHandler(() {
-      if (mounted) setState(() => _isPlaying = true);
+      if (mounted) {
+        setState(() {
+          _isPlaying = true;
+          _isPaused = false;
+          _showPlayerBar = true;
+        });
+      }
     });
 
     _flutterTts.setCompletionHandler(() {
-      if (kIsWeb && _isPlaying) {
-        _playNextChunk();
-      } else {
+      if (!kIsWeb) {
         _stopAudio();
       }
     });
 
     _flutterTts.setCancelHandler(() {
-      _stopAudio();
+      if (!kIsWeb && !_isPaused) _stopAudio();
     });
 
     _flutterTts.setErrorHandler((msg) {
+      final errorStr = msg.toString().toLowerCase();
+      if (errorStr.contains("interrupted") || errorStr.contains("canceled")) return;
       debugPrint("TTS Error: $msg");
       _stopAudio();
     });
 
-    // Subrayado nativo en Android/iOS cuando es app instalada
     _flutterTts.setProgressHandler((String text, int start, int end, String word) {
       if (mounted && _isPlaying && !kIsWeb) {
         setState(() {
@@ -104,9 +121,26 @@ class _TodayTabState extends State<TodayTab> {
         });
       }
     });
+
+    // Callback Web protegido por ID de sesión
+    if (kIsWeb) {
+      js.context['flutterOnChunkEnd'] = (int incomingSessionId) {
+        if (mounted && _isPlaying && incomingSessionId == _playSessionId) {
+          _playNextChunk(incomingSessionId);
+        }
+      };
+
+      // Precarga de voces en el navegador para eliminar la latencia inicial
+      try {
+        js.context.callMethod('eval', [
+          'if (window.speechSynthesis) { window.speechSynthesis.getVoices(); }'
+        ]);
+      } catch (_) {}
+    }
   }
 
   void _stopAudio() {
+    _playSessionId++; // Invalida callbacks pendientes
     _highlightTimer?.cancel();
     _highlightTimer = null;
     _textChunks.clear();
@@ -118,15 +152,42 @@ class _TodayTabState extends State<TodayTab> {
           'if (window.speechSynthesis) { window.speechSynthesis.cancel(); }'
         ]);
       } catch (_) {}
+    } else {
+      _flutterTts.stop();
     }
-
-    _flutterTts.stop();
 
     if (mounted) {
       setState(() {
         _isPlaying = false;
+        _isPaused = false;
+        _showPlayerBar = false;
         _currentWordStart = 0;
         _currentWordEnd = 0;
+        _currentWordIndex = 0;
+        _draggedWordIndex = null;
+      });
+    }
+  }
+
+  void _pauseAudio() {
+    _playSessionId++;
+    _highlightTimer?.cancel();
+    _highlightTimer = null;
+
+    if (kIsWeb) {
+      try {
+        js.context.callMethod('eval', [
+          'if (window.speechSynthesis) { window.speechSynthesis.cancel(); }'
+        ]);
+      } catch (_) {}
+    } else {
+      _flutterTts.stop();
+    }
+
+    if (mounted) {
+      setState(() {
+        _isPlaying = false;
+        _isPaused = true;
       });
     }
   }
@@ -136,120 +197,248 @@ class _TodayTabState extends State<TodayTab> {
       _speedIndex = (_speedIndex + 1) % _speedLabels.length;
     });
 
-    final rate = _speedRates[_speedIndex];
-    _flutterTts.setSpeechRate(kIsWeb ? rate : 0.5 * rate);
+    _flutterTts.setSpeechRate(_currentRate);
 
-    if (_isPlaying && widget.todayReading.chapterContent != null) {
-      _stopAudio();
-      _speakText(widget.todayReading.chapterContent!);
+    if (_isPlaying) {
+      _resumeAudioFromIndex(_currentWordIndex);
     }
   }
 
-  void _playNextChunk() {
+  void _playNextChunk(int activeSessionId) {
+    if (activeSessionId != _playSessionId) return;
+
     if (_currentChunkIndex < _textChunks.length && _isPlaying) {
       final chunk = _textChunks[_currentChunkIndex];
       _currentChunkIndex++;
 
       if (kIsWeb) {
-        try {
-          js.context.callMethod('eval', [
-            'if (window.speechSynthesis && window.speechSynthesis.paused) { window.speechSynthesis.resume(); }'
-          ]);
-        } catch (_) {}
+        _speakDirectWeb(chunk, activeSessionId);
+      } else {
+        _flutterTts.speak(chunk);
       }
-
-      _flutterTts.speak(chunk);
     } else {
       _stopAudio();
     }
   }
 
-  void _speakText(String rawText) {
+  // Reproducción web sin esperas asíncronas
+  void _speakDirectWeb(String text, int activeSessionId) {
+    try {
+      final escaped = text
+          .replaceAll(r'\', r'\\')
+          .replaceAll('"', r'\"')
+          .replaceAll("'", r"\'")
+          .replaceAll('\n', ' ');
+      final rate = _currentRate;
+
+      js.context.callMethod('eval', [
+        '''
+        (function() {
+          if (!('speechSynthesis' in window)) return;
+          window.speechSynthesis.cancel();
+          window.speechSynthesis.resume();
+          
+          var utter = new SpeechSynthesisUtterance("$escaped");
+          utter.lang = 'es-ES';
+          utter.rate = $rate;
+          utter.pitch = 1.0;
+          
+          if (!window._cachedEsVoice) {
+            var voices = window.speechSynthesis.getVoices();
+            for (var i = 0; i < voices.length; i++) {
+              if (voices[i].lang.indexOf('es') !== -1) {
+                window._cachedEsVoice = voices[i];
+                break;
+              }
+            }
+          }
+          if (window._cachedEsVoice) {
+            utter.voice = window._cachedEsVoice;
+          }
+          
+          utter.onend = function() {
+            if (window.flutterOnChunkEnd) window.flutterOnChunkEnd($activeSessionId);
+          };
+          utter.onerror = function(e) {
+            if (e.error !== 'interrupted' && e.error !== 'canceled') {
+              if (window.flutterOnChunkEnd) window.flutterOnChunkEnd($activeSessionId);
+            }
+          };
+          
+          window.speechSynthesis.speak(utter);
+        })();
+        '''
+      ]);
+    } catch (e) {
+      debugPrint("Error speak web directo: $e");
+    }
+  }
+
+  void _speakOrToggle(String rawText) {
     if (rawText.isEmpty) return;
 
     if (_isPlaying) {
-      _stopAudio();
-      return;
+      _pauseAudio();
+    } else if (_isPaused) {
+      _resumeAudioFromIndex(_currentWordIndex);
+    } else {
+      _startAudioFromBeginning(rawText);
     }
+  }
 
-    if (kIsWeb) {
-      try {
-        js.context.callMethod('eval', [
-          'if (window.speechSynthesis) { window.speechSynthesis.cancel(); window.speechSynthesis.resume(); }'
-        ]);
-      } catch (_) {}
-    }
-
-    String cleanText = rawText
+  void _startAudioFromBeginning(String rawText) {
+    _cachedCleanText = rawText
         .replaceAll('\r', '')
         .replaceAll(RegExp(r'[\$\#\_\@]'), '')
         .trim();
 
+    _wordMatches = RegExp(r'\S+').allMatches(_cachedCleanText).toList();
+    _currentWordIndex = 0;
+
+    _resumeAudioFromIndex(0);
+  }
+
+  List<String> _buildSafeChunks(String text) {
+    final List<String> chunks = [];
+    final rawParts = text.split(RegExp(r'(?<=[.?!;\n])\s+'));
+
+    for (final part in rawParts) {
+      final trimmed = part.trim();
+      if (trimmed.isEmpty) continue;
+
+      if (trimmed.length > 180) {
+        final words = trimmed.split(' ');
+        String current = '';
+        for (final w in words) {
+          if ((current.length + w.length + 1) > 180) {
+            if (current.isNotEmpty) chunks.add(current.trim());
+            current = w;
+          } else {
+            current = current.isEmpty ? w : '$current $w';
+          }
+        }
+        if (current.isNotEmpty) chunks.add(current.trim());
+      } else {
+        chunks.add(trimmed);
+      }
+    }
+
+    if (chunks.isEmpty && text.trim().isNotEmpty) {
+      chunks.add(text.trim());
+    }
+
+    return chunks;
+  }
+
+  void _resumeAudioFromIndex(int startIndex) {
+    if (_cachedCleanText.isEmpty && widget.todayReading.chapterContent != null) {
+      _cachedCleanText = widget.todayReading.chapterContent!
+          .replaceAll('\r', '')
+          .replaceAll(RegExp(r'[\$\#\_\@]'), '')
+          .trim();
+      _wordMatches = RegExp(r'\S+').allMatches(_cachedCleanText).toList();
+    }
+
+    if (_wordMatches.isEmpty) return;
+
+    _playSessionId++;
+    final currentSession = _playSessionId;
+    _highlightTimer?.cancel();
+
+    if (startIndex >= _wordMatches.length) {
+      _stopAudio();
+      return;
+    }
+
+    final startChar = _wordMatches[startIndex].start;
+    final textToSpeak = _cachedCleanText.substring(startChar).trim();
+
     setState(() {
       _isPlaying = true;
-      _currentWordStart = 0;
-      _currentWordEnd = 0;
+      _isPaused = false;
+      _showPlayerBar = true;
+      _currentWordIndex = startIndex;
+      _draggedWordIndex = null;
+      _currentWordStart = _wordMatches[startIndex].start;
+      _currentWordEnd = _wordMatches[startIndex].end;
     });
 
     if (kIsWeb) {
-      _startDynamicWebHighlight(cleanText, _speedRates[_speedIndex]);
-      _textChunks = cleanText
-          .split(RegExp(r'(?<=[.?!;\n])\s+'))
-          .where((s) => s.trim().isNotEmpty)
-          .toList();
+      _startDynamicWebHighlight(_cachedCleanText, _currentRate, startIndex, currentSession);
+      _textChunks = _buildSafeChunks(textToSpeak);
 
-      if (_textChunks.isEmpty) _textChunks = [cleanText];
-      _currentChunkIndex = 0;
-      _playNextChunk();
+      if (_textChunks.isNotEmpty) {
+        final first = _textChunks[0];
+        _currentChunkIndex = 1;
+        _speakDirectWeb(first, currentSession);
+      } else {
+        _stopAudio();
+      }
     } else {
-      _flutterTts.speak(cleanText);
+      _flutterTts.speak(textToSpeak);
     }
   }
 
-  // Sincronización proporcional a la longitud de palabras y pausas de puntuación
-  void _startDynamicWebHighlight(String text, double speedMultiplier) {
+  void _seekToWordIndex(int targetIndex) {
+    if (_wordMatches.isEmpty) {
+      if (widget.todayReading.chapterContent == null) return;
+      _cachedCleanText = widget.todayReading.chapterContent!
+          .replaceAll('\r', '')
+          .replaceAll(RegExp(r'[\$\#\_\@]'), '')
+          .trim();
+      _wordMatches = RegExp(r'\S+').allMatches(_cachedCleanText).toList();
+    }
+
+    targetIndex = targetIndex.clamp(0, _wordMatches.length - 1);
+
+    setState(() {
+      _currentWordIndex = targetIndex;
+      _draggedWordIndex = null;
+      _currentWordStart = _wordMatches[targetIndex].start;
+      _currentWordEnd = _wordMatches[targetIndex].end;
+    });
+
+    _resumeAudioFromIndex(targetIndex);
+  }
+
+  void _startDynamicWebHighlight(String text, double rate, int startIndex, int activeSessionId) {
     _highlightTimer?.cancel();
-
-    final matches = RegExp(r'\S+').allMatches(text).toList();
-    if (matches.isEmpty) return;
-
-    // Base por carácter: ~65ms por letra en español a velocidad 1.0x
-    final double msPerChar = 65.0 / speedMultiplier;
-    int index = 0;
+    final double msPerChar = 68.0 / rate;
+    int index = startIndex;
 
     void scheduleNextWord() {
-      if (!_isPlaying || index >= matches.length) {
-        if (index >= matches.length) _stopAudio();
+      if (!_isPlaying || activeSessionId != _playSessionId || index >= _wordMatches.length) {
+        if (index >= _wordMatches.length && activeSessionId == _playSessionId) {
+          _stopAudio();
+        }
         return;
       }
 
-      final match = matches[index];
+      final match = _wordMatches[index];
       final word = text.substring(match.start, match.end);
 
       if (mounted) {
         setState(() {
+          _currentWordIndex = index;
           _currentWordStart = match.start;
           _currentWordEnd = match.end;
         });
       }
 
-      // Tiempo base según tamaño de la palabra
-      double durationMs = (word.length * msPerChar).clamp(160.0 / speedMultiplier, 900.0 / speedMultiplier);
+      double durationMs = (word.length * msPerChar).clamp(160.0 / rate, 800.0 / rate);
 
-      // Añadir pausas según puntuación para imitar la respiración del locutor
       if (word.endsWith('.') || word.endsWith('!') || word.endsWith('?')) {
-        durationMs += (320.0 / speedMultiplier);
+        durationMs += (280.0 / rate);
       } else if (word.endsWith(',') || word.endsWith(';') || word.endsWith(':')) {
-        durationMs += (160.0 / speedMultiplier);
+        durationMs += (140.0 / rate);
       }
 
       index++;
       _highlightTimer = Timer(Duration(milliseconds: durationMs.round()), scheduleNextWord);
     }
 
-    // Pequeño retardo inicial (~220ms) para esperar que el parlante del móvil despierte y empiece a hablar
-    final startDelay = (220.0 / speedMultiplier).round();
-    _highlightTimer = Timer(Duration(milliseconds: startDelay), scheduleNextWord);
+    // Arranque inmediato (0 ms) sin pausas de espera
+    scheduleNextWord();
   }
 
   @override
@@ -271,341 +460,484 @@ class _TodayTabState extends State<TodayTab> {
     final nombreMes = _meses[readingDate.month - 1];
     final String formattedDate = "$nombreDia, ${readingDate.day} de $nombreMes".toUpperCase();
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 10.0),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return Stack(
+      children: [
+        SingleChildScrollView(
+          padding: EdgeInsets.fromLTRB(20.0, 10.0, 20.0, _showPlayerBar ? 120.0 : 20.0),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      "PANEL DEVOCIONAL",
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey.shade600, letterSpacing: 1.1),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      formattedDate,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: theme.primaryColor),
-                    ),
-                  ],
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.orange.withOpacity(0.15),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Text("🔥", style: TextStyle(fontSize: 16)),
-                    const SizedBox(width: 6),
-                    Text(
-                      "${widget.streakCount} ${widget.streakCount == 1 ? 'DÍA' : 'DÍAS'}",
-                      style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.deepOrange, fontSize: 13),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 24),
-          Card(
-            elevation: 3,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            child: Container(
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(16),
-                gradient: LinearGradient(
-                  colors: [theme.primaryColor, theme.primaryColor.withOpacity(0.85)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-              ),
-              padding: const EdgeInsets.all(22.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    children: [
-                      const Icon(Icons.menu_book, color: Colors.white, size: 28),
-                      const SizedBox(width: 10),
-                      Text(
-                        "LECTURA DE HOY",
-                        style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.1),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    widget.todayReading.bookAndChapter,
-                    style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold, letterSpacing: -0.5),
-                  ),
-                  if (hasEvent) ...[
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                      decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
-                      child: Text(
-                        widget.todayReading.specialEvent!,
-                        style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
-                      ),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "PANEL DEVOCIONAL",
+                          style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.grey.shade600, letterSpacing: 1.1),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          formattedDate,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: theme.primaryColor),
+                        ),
+                      ],
                     ),
-                  ],
-                  const SizedBox(height: 24),
-                  ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: widget.todayReading.isCompleted ? Colors.green.shade600 : Colors.white,
-                      foregroundColor: widget.todayReading.isCompleted ? Colors.white : theme.primaryColor,
-                      minimumSize: const Size.fromHeight(48),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                      elevation: 0,
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(20),
                     ),
-                    onPressed: () => widget.onToggle(widget.todayReading),
-                    icon: Icon(widget.todayReading.isCompleted ? Icons.check_circle : Icons.bookmark_add_outlined),
-                    label: Text(
-                      widget.todayReading.isCompleted ? "¡COMPLETADO!" : "MARCAR COMO LEÍDO",
-                      style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text("🔥", style: TextStyle(fontSize: 16)),
+                        const SizedBox(width: 6),
+                        Text(
+                          "${widget.streakCount} ${widget.streakCount == 1 ? 'DÍA' : 'DÍAS'}",
+                          style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.deepOrange, fontSize: 13),
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
-            ),
-          ),
-          const SizedBox(height: 20),
-          if (hasVerse) ...[
-            Text(
-              "Versículo Clave",
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: theme.primaryColor),
-            ),
-            const SizedBox(height: 8),
-            Card(
-              elevation: 1,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade200)),
-              color: Colors.white,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      "\"${widget.todayReading.dailyVerse}\"",
-                      style: TextStyle(fontSize: 15, fontStyle: FontStyle.italic, color: Colors.grey.shade800, height: 1.4),
+              const SizedBox(height: 24),
+              Card(
+                elevation: 3,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                child: Container(
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    gradient: LinearGradient(
+                      colors: [theme.primaryColor, theme.primaryColor.withOpacity(0.85)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
                     ),
-                    const SizedBox(height: 10),
-                    Align(
-                      alignment: Alignment.bottomRight,
-                      child: Text(
-                        widget.todayReading.dailyVerseRef ?? "",
-                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: theme.primaryColor),
+                  ),
+                  padding: const EdgeInsets.all(22.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(Icons.menu_book, color: Colors.white, size: 28),
+                          const SizedBox(width: 10),
+                          Text(
+                            "LECTURA DE HOY",
+                            style: TextStyle(color: Colors.white.withOpacity(0.85), fontSize: 13, fontWeight: FontWeight.bold, letterSpacing: 1.1),
+                          ),
+                        ],
                       ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-          ],
-          if (hasContent) ...[
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  "Guía del Capítulo",
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: theme.primaryColor),
-                ),
-                Row(
-                  children: [
-                    // Botón de velocidad (1.0x, 1.5x, 2.0x)
-                    InkWell(
-                      onTap: _cycleSpeed,
-                      borderRadius: BorderRadius.circular(8),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
-                        decoration: BoxDecoration(
-                          color: theme.primaryColor.withOpacity(0.12),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          _speedLabels[_speedIndex],
-                          style: TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                            color: theme.primaryColor,
+                      const SizedBox(height: 16),
+                      Text(
+                        widget.todayReading.bookAndChapter,
+                        style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.bold, letterSpacing: -0.5),
+                      ),
+                      if (hasEvent) ...[
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                          decoration: BoxDecoration(color: Colors.white.withOpacity(0.2), borderRadius: BorderRadius.circular(8)),
+                          child: Text(
+                            widget.todayReading.specialEvent!,
+                            style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w500),
                           ),
                         ),
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    IconButton(
-                      icon: Icon(
-                        _isPlaying ? Icons.stop_circle_rounded : Icons.play_circle_fill_rounded,
-                        color: _isPlaying ? Colors.redAccent : theme.primaryColor,
-                        size: 26,
-                      ),
-                      tooltip: _isPlaying ? "Detener" : "Escuchar",
-                      onPressed: () => _speakText(widget.todayReading.chapterContent!),
-                    ),
-                    const SizedBox(width: 4),
-                    IconButton(
-                      icon: Icon(Icons.text_decrease_rounded, color: theme.primaryColor, size: 20),
-                      onPressed: widget.currentFontSize > 12.0
-                          ? () => widget.onFontSizeChanged(widget.currentFontSize - 2.0)
-                          : null,
-                    ),
-                    IconButton(
-                      icon: Icon(Icons.text_increase_rounded, color: theme.primaryColor, size: 20),
-                      onPressed: widget.currentFontSize < 24.0
-                          ? () => widget.onFontSizeChanged(widget.currentFontSize + 2.0)
-                          : null,
-                    ),
-                  ],
-                )
-              ],
-            ),
-            const SizedBox(height: 8),
-            Card(
-              elevation: 1,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade200)),
-              color: Colors.grey.shade50,
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(Icons.auto_stories, color: theme.primaryColor.withOpacity(0.7), size: 22),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: _buildHighlightedContent(
-                        content: widget.todayReading.chapterContent!,
-                        primaryColor: theme.primaryColor,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-          ],
-          if (hasQuiz) ...[
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: theme.primaryColor.withOpacity(0.08),
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: theme.primaryColor.withOpacity(0.25)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(Icons.sports_esports_rounded, color: theme.primaryColor),
-                      const SizedBox(width: 8),
-                      Text(
-                        "¡Pon a prueba lo aprendido!",
-                        style: TextStyle(
-                          fontWeight: FontWeight.bold,
-                          fontSize: 16,
-                          color: theme.primaryColor,
+                      ],
+                      const SizedBox(height: 24),
+                      ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: widget.todayReading.isCompleted ? Colors.green.shade600 : Colors.white,
+                          foregroundColor: widget.todayReading.isCompleted ? Colors.white : theme.primaryColor,
+                          minimumSize: const Size.fromHeight(48),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          elevation: 0,
+                        ),
+                        onPressed: () => widget.onToggle(widget.todayReading),
+                        icon: Icon(widget.todayReading.isCompleted ? Icons.check_circle : Icons.bookmark_add_outlined),
+                        label: Text(
+                          widget.todayReading.isCompleted ? "¡COMPLETADO!" : "MARCAR COMO LEÍDO",
+                          style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.5),
                         ),
                       ),
                     ],
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    "Responde el cuestionario interactivo de este capítulo para recapitular tu devocional.",
-                    style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+                ),
+              ),
+              const SizedBox(height: 20),
+              if (hasVerse) ...[
+                Text(
+                  "Versículo Clave",
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: theme.primaryColor),
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  elevation: 1,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade200)),
+                  color: Colors.white,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "\"${widget.todayReading.dailyVerse}\"",
+                          style: TextStyle(fontSize: 15, fontStyle: FontStyle.italic, color: Colors.grey.shade800, height: 1.4),
+                        ),
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: Alignment.bottomRight,
+                          child: Text(
+                            widget.todayReading.dailyVerseRef ?? "",
+                            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: theme.primaryColor),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                  if (!widget.isLoggedIn) ...[
-                    const SizedBox(height: 10),
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFFFFBEB),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color.fromARGB(255, 253, 203, 138)),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(Icons.lock_outline_rounded, size: 18, color: Colors.amber.shade900),
-                          const SizedBox(width: 8),
-                          const Expanded(
+                ),
+                const SizedBox(height: 20),
+              ],
+              if (hasContent) ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      "Guía del Capítulo",
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: theme.primaryColor),
+                    ),
+                    Row(
+                      children: [
+                        InkWell(
+                          onTap: _cycleSpeed,
+                          borderRadius: BorderRadius.circular(8),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                            decoration: BoxDecoration(
+                              color: theme.primaryColor.withOpacity(0.12),
+                              borderRadius: BorderRadius.circular(8),
+                            ),
                             child: Text(
-                              "Debes iniciar sesión para jugar y guardar tu progreso en el ranking.",
+                              _speedLabels[_speedIndex],
                               style: TextStyle(
                                 fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: Color(0xFF92400E),
+                                fontWeight: FontWeight.bold,
+                                color: theme.primaryColor,
                               ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 4),
+                        IconButton(
+                          icon: Icon(
+                            _isPlaying
+                                ? Icons.pause_circle_filled_rounded
+                                : Icons.play_circle_fill_rounded,
+                            color: _isPlaying ? Colors.orange.shade800 : theme.primaryColor,
+                            size: 28,
+                          ),
+                          tooltip: _isPlaying ? "Pausar" : "Escuchar",
+                          onPressed: () => _speakOrToggle(widget.todayReading.chapterContent!),
+                        ),
+                        const SizedBox(width: 4),
+                        IconButton(
+                          icon: Icon(Icons.text_decrease_rounded, color: theme.primaryColor, size: 20),
+                          onPressed: widget.currentFontSize > 12.0
+                              ? () => widget.onFontSizeChanged(widget.currentFontSize - 2.0)
+                              : null,
+                        ),
+                        IconButton(
+                          icon: Icon(Icons.text_increase_rounded, color: theme.primaryColor, size: 20),
+                          onPressed: widget.currentFontSize < 24.0
+                              ? () => widget.onFontSizeChanged(widget.currentFontSize + 2.0)
+                              : null,
+                        ),
+                      ],
+                    )
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Card(
+                  elevation: 1,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12), side: BorderSide(color: Colors.grey.shade200)),
+                  color: Colors.grey.shade50,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.auto_stories, color: theme.primaryColor.withOpacity(0.7), size: 22),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: _buildHighlightedContent(
+                            content: widget.todayReading.chapterContent!,
+                            primaryColor: theme.primaryColor,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+              ],
+              if (hasQuiz) ...[
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: theme.primaryColor.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(16),
+                    border: Border.all(color: theme.primaryColor.withOpacity(0.25)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.sports_esports_rounded, color: theme.primaryColor),
+                          const SizedBox(width: 8),
+                          Text(
+                            "¡Pon a prueba lo aprendido!",
+                            style: TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 16,
+                              color: theme.primaryColor,
                             ),
                           ),
                         ],
                       ),
-                    ),
-                  ],
-                  const SizedBox(height: 14),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 46,
-                    child: ElevatedButton.icon(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: widget.isLoggedIn ? theme.primaryColor : const Color(0xFFD97706),
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        elevation: 0,
+                      const SizedBox(height: 6),
+                      Text(
+                        "Responde el cuestionario interactivo de este capítulo para recapitular tu devocional.",
+                        style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
                       ),
-                      onPressed: widget.isLoggedIn
-                          ? () {
-                              showModalBottomSheet(
-                                context: context,
-                                isScrollControlled: true,
-                                shape: const RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                      if (!widget.isLoggedIn) ...[
+                        const SizedBox(height: 10),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFFFFBEB),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color.fromARGB(255, 253, 203, 138)),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(Icons.lock_outline_rounded, size: 18, color: Colors.amber.shade900),
+                              const SizedBox(width: 8),
+                              const Expanded(
+                                child: Text(
+                                  "Debes iniciar sesión para jugar y guardar tu progreso en el ranking.",
+                                  style: TextStyle(
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFF92400E),
+                                  ),
                                 ),
-                                builder: (context) => _QuizViewerModal(
-                                  preguntas: widget.todayReading.quiz!,
-                                  titulo: widget.todayReading.bookAndChapter,
-                                  activeProfileId: widget.activeProfileId,
-                                ),
-                              );
-                            }
-                          : () {
-                              if (widget.onGoToProfile != null) {
-                                widget.onGoToProfile!();
-                              }
-                              ScaffoldMessenger.of(context).showSnackBar(
-                                const SnackBar(
-                                  content: Text('Inicia sesión en tu perfil para registrar tu puntaje 🎯'),
-                                  backgroundColor: Colors.orange,
-                                  duration: Duration(seconds: 2),
-                                ),
-                              );
-                            },
-                      icon: Icon(widget.isLoggedIn ? Icons.play_arrow_rounded : Icons.login_rounded),
-                      label: Text(
-                        widget.isLoggedIn ? "JUGAR CUESTIONARIO 🎯" : "INICIAR SESIÓN PARA JUGAR",
-                        style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.3),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        width: double.infinity,
+                        height: 46,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: widget.isLoggedIn ? theme.primaryColor : const Color(0xFFD97706),
+                            foregroundColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            elevation: 0,
+                          ),
+                          onPressed: widget.isLoggedIn
+                              ? () {
+                                  showModalBottomSheet(
+                                    context: context,
+                                    isScrollControlled: true,
+                                    shape: const RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                                    ),
+                                    builder: (context) => _QuizViewerModal(
+                                      preguntas: widget.todayReading.quiz!,
+                                      titulo: widget.todayReading.bookAndChapter,
+                                      activeProfileId: widget.activeProfileId,
+                                    ),
+                                  );
+                                }
+                              : () {
+                                  if (widget.onGoToProfile != null) {
+                                    widget.onGoToProfile!();
+                                  }
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Inicia sesión en tu perfil para registrar tu puntaje 🎯'),
+                                      backgroundColor: Colors.orange,
+                                      duration: Duration(seconds: 2),
+                                    ),
+                                  );
+                                },
+                          icon: Icon(widget.isLoggedIn ? Icons.play_arrow_rounded : Icons.login_rounded),
+                          label: Text(
+                            widget.isLoggedIn ? "JUGAR CUESTIONARIO 🎯" : "INICIAR SESIÓN PARA JUGAR",
+                            style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.3),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 20),
+              ],
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+
+        // MINI PLAYER FLOTANTE
+        if (_showPlayerBar && _wordMatches.isNotEmpty)
+          Positioned(
+            left: 16,
+            right: 16,
+            bottom: 16,
+            child: _buildAudioPlayerBar(theme),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildAudioPlayerBar(ThemeData theme) {
+    final totalWords = _wordMatches.length;
+    final double maxVal = (totalWords > 1 ? totalWords - 1 : 1).toDouble();
+    final double rawVal = _draggedWordIndex ?? _currentWordIndex.toDouble();
+    final double effectiveIndex = rawVal.clamp(0.0, maxVal).toDouble();
+    final double percentage = totalWords > 0 ? ((effectiveIndex + 1) / totalWords) * 100 : 0;
+
+    return Material(
+      elevation: 8,
+      borderRadius: BorderRadius.circular(16),
+      color: Colors.white,
+      shadowColor: Colors.black.withOpacity(0.3),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: theme.primaryColor.withOpacity(0.2)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: theme.primaryColor.withOpacity(0.1),
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(Icons.headphones_rounded, color: theme.primaryColor, size: 18),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    widget.todayReading.bookAndChapter,
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey.shade900),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                Text(
+                  "${percentage.toStringAsFixed(0)}%",
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 11, color: Colors.grey.shade600),
+                ),
+                const SizedBox(width: 4),
+                IconButton(
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(),
+                  icon: const Icon(Icons.close_rounded, size: 18, color: Colors.grey),
+                  onPressed: _stopAudio,
+                ),
+              ],
+            ),
+            const SizedBox(height: 2),
+            SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: 4,
+                thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+                overlayShape: const RoundSliderOverlayShape(overlayRadius: 12),
+                activeTrackColor: theme.primaryColor,
+                inactiveTrackColor: Colors.grey.shade200,
+                thumbColor: theme.primaryColor,
+              ),
+              child: Slider(
+                value: effectiveIndex,
+                min: 0.0,
+                max: maxVal,
+                onChanged: (val) {
+                  setState(() {
+                    _draggedWordIndex = val;
+                    final idx = val.round().clamp(0, _wordMatches.length - 1);
+                    _currentWordStart = _wordMatches[idx].start;
+                    _currentWordEnd = _wordMatches[idx].end;
+                  });
+                },
+                onChangeEnd: (val) {
+                  _seekToWordIndex(val.round());
+                },
+              ),
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.replay_10_rounded, size: 22),
+                  color: Colors.grey.shade700,
+                  tooltip: "Retroceder 15 palabras",
+                  onPressed: () => _seekToWordIndex(_currentWordIndex - 15),
+                ),
+                IconButton(
+                  icon: Icon(
+                    _isPlaying ? Icons.pause_circle_filled_rounded : Icons.play_circle_filled_rounded,
+                    size: 34,
+                    color: theme.primaryColor,
+                  ),
+                  onPressed: () => _speakOrToggle(widget.todayReading.chapterContent!),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.forward_10_rounded, size: 22),
+                  color: Colors.grey.shade700,
+                  tooltip: "Avanzar 15 palabras",
+                  onPressed: () => _seekToWordIndex(_currentWordIndex + 15),
+                ),
+                InkWell(
+                  onTap: _cycleSpeed,
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: theme.primaryColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      _speedLabels[_speedIndex],
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: theme.primaryColor,
                       ),
                     ),
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
-            const SizedBox(height: 20),
           ],
-          const SizedBox(height: 16),
-        ],
+        ),
       ),
     );
   }
@@ -621,7 +953,7 @@ class _TodayTabState extends State<TodayTab> {
       letterSpacing: 0.2,
     );
 
-    if (!_isPlaying || _currentWordEnd <= _currentWordStart || _currentWordEnd > content.length) {
+    if (!_showPlayerBar || _currentWordEnd <= _currentWordStart || _currentWordEnd > content.length) {
       return Text(
         content,
         textAlign: TextAlign.justify,
