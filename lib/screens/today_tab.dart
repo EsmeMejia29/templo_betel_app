@@ -8,6 +8,12 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'dart:js' as js;
 
+class _TextChunk {
+  final String text;
+  final int globalStartOffset;
+  _TextChunk(this.text, this.globalStartOffset);
+}
+
 class TodayTab extends StatefulWidget {
   final DevotionalReading todayReading;
   final Function(DevotionalReading) onToggle;
@@ -40,10 +46,9 @@ class _TodayTabState extends State<TodayTab> {
   bool _isPaused = false;
   bool _showPlayerBar = false;
 
-  // Identificador de sesión para evitar que eventos de audio cancelado cierren la barra
   int _playSessionId = 0;
 
-  // Velocidades calibradas para pronunciación natural
+  // Velocidades calibradas
   int _speedIndex = 0;
   final List<String> _speedLabels = ["1.0x", "1.5x", "2.0x"];
   final List<double> _webSpeedRates = [1.0, 1.25, 1.45];
@@ -55,9 +60,8 @@ class _TodayTabState extends State<TodayTab> {
   int _currentWordIndex = 0;
   double? _draggedWordIndex;
   List<RegExpMatch> _wordMatches = [];
-  Timer? _highlightTimer;
 
-  List<String> _textChunks = [];
+  List<_TextChunk> _textChunks = [];
   int _currentChunkIndex = 0;
   String _cachedCleanText = "";
 
@@ -115,34 +119,96 @@ class _TodayTabState extends State<TodayTab> {
 
     _flutterTts.setProgressHandler((String text, int start, int end, String word) {
       if (mounted && _isPlaying && !kIsWeb) {
-        setState(() {
-          _currentWordStart = start;
-          _currentWordEnd = end;
-        });
+        _onBoundaryHit(start);
       }
     });
 
-    // Callback Web protegido por ID de sesión
     if (kIsWeb) {
+      // Evento de sincronización en tiempo real emitido por el sintetizador del navegador
+      js.context['flutterOnWordBoundary'] = (int incomingSessionId, int globalCharIndex) {
+        if (mounted && _isPlaying && incomingSessionId == _playSessionId) {
+          _onBoundaryHit(globalCharIndex);
+        }
+      };
+
+      js.context['flutterOnChunkStart'] = (int incomingSessionId, int globalOffset) {
+        if (mounted && _isPlaying && incomingSessionId == _playSessionId) {
+          _onBoundaryHit(globalOffset);
+        }
+      };
+
       js.context['flutterOnChunkEnd'] = (int incomingSessionId) {
         if (mounted && _isPlaying && incomingSessionId == _playSessionId) {
           _playNextChunk(incomingSessionId);
         }
       };
 
-      // Precarga de voces en el navegador para eliminar la latencia inicial
       try {
         js.context.callMethod('eval', [
-          'if (window.speechSynthesis) { window.speechSynthesis.getVoices(); }'
+          '''
+          (function() {
+            if (!('speechSynthesis' in window)) return;
+            function warmUpVoices() {
+              var voices = window.speechSynthesis.getVoices();
+              if (voices.length > 0 && !window._cachedEsVoice) {
+                for (var i = 0; i < voices.length; i++) {
+                  if (voices[i].lang.indexOf('es') !== -1 && voices[i].localService) {
+                    window._cachedEsVoice = voices[i];
+                    break;
+                  }
+                }
+                if (!window._cachedEsVoice) {
+                  for (var i = 0; i < voices.length; i++) {
+                    if (voices[i].lang.indexOf('es') !== -1) {
+                      window._cachedEsVoice = voices[i];
+                      break;
+                    }
+                  }
+                }
+              }
+            }
+            warmUpVoices();
+            if (speechSynthesis.onvoiceschanged !== undefined) {
+              speechSynthesis.onvoiceschanged = warmUpVoices;
+            }
+            var silentUtter = new SpeechSynthesisUtterance(' ');
+            silentUtter.volume = 0.01;
+            window.speechSynthesis.speak(silentUtter);
+          })();
+          '''
         ]);
       } catch (_) {}
     }
   }
 
+  // Busca y subraya la palabra exacta correspondiente al charIndex del audio
+  void _onBoundaryHit(int globalCharIndex) {
+    if (_wordMatches.isEmpty) return;
+
+    int foundIdx = -1;
+    for (int i = 0; i < _wordMatches.length; i++) {
+      final m = _wordMatches[i];
+      if (globalCharIndex >= m.start && globalCharIndex <= m.end) {
+        foundIdx = i;
+        break;
+      } else if (m.start > globalCharIndex) {
+        foundIdx = i;
+        break;
+      }
+    }
+
+    if (foundIdx != -1 && foundIdx != _currentWordIndex) {
+      final m = _wordMatches[foundIdx];
+      setState(() {
+        _currentWordIndex = foundIdx;
+        _currentWordStart = m.start;
+        _currentWordEnd = m.end;
+      });
+    }
+  }
+
   void _stopAudio() {
-    _playSessionId++; // Invalida callbacks pendientes
-    _highlightTimer?.cancel();
-    _highlightTimer = null;
+    _playSessionId++;
     _textChunks.clear();
     _currentChunkIndex = 0;
 
@@ -171,8 +237,6 @@ class _TodayTabState extends State<TodayTab> {
 
   void _pauseAudio() {
     _playSessionId++;
-    _highlightTimer?.cancel();
-    _highlightTimer = null;
 
     if (kIsWeb) {
       try {
@@ -212,17 +276,16 @@ class _TodayTabState extends State<TodayTab> {
       _currentChunkIndex++;
 
       if (kIsWeb) {
-        _speakDirectWeb(chunk, activeSessionId);
+        _speakDirectWeb(chunk.text, activeSessionId, chunk.globalStartOffset);
       } else {
-        _flutterTts.speak(chunk);
+        _flutterTts.speak(chunk.text);
       }
     } else {
       _stopAudio();
     }
   }
 
-  // Reproducción web sin esperas asíncronas
-  void _speakDirectWeb(String text, int activeSessionId) {
+  void _speakDirectWeb(String text, int activeSessionId, int chunkStartOffset) {
     try {
       final escaped = text
           .replaceAll(r'\', r'\\')
@@ -246,9 +309,17 @@ class _TodayTabState extends State<TodayTab> {
           if (!window._cachedEsVoice) {
             var voices = window.speechSynthesis.getVoices();
             for (var i = 0; i < voices.length; i++) {
-              if (voices[i].lang.indexOf('es') !== -1) {
+              if (voices[i].lang.indexOf('es') !== -1 && voices[i].localService) {
                 window._cachedEsVoice = voices[i];
                 break;
+              }
+            }
+            if (!window._cachedEsVoice) {
+              for (var i = 0; i < voices.length; i++) {
+                if (voices[i].lang.indexOf('es') !== -1) {
+                  window._cachedEsVoice = voices[i];
+                  break;
+                }
               }
             }
           }
@@ -256,9 +327,21 @@ class _TodayTabState extends State<TodayTab> {
             utter.voice = window._cachedEsVoice;
           }
           
+          utter.onstart = function() {
+            if (window.flutterOnChunkStart) window.flutterOnChunkStart($activeSessionId, $chunkStartOffset);
+          };
+
+          utter.onboundary = function(e) {
+            var idx = (e.charIndex !== undefined) ? e.charIndex : 0;
+            if (window.flutterOnWordBoundary) {
+              window.flutterOnWordBoundary($activeSessionId, $chunkStartOffset + idx);
+            }
+          };
+
           utter.onend = function() {
             if (window.flutterOnChunkEnd) window.flutterOnChunkEnd($activeSessionId);
           };
+
           utter.onerror = function(e) {
             if (e.error !== 'interrupted' && e.error !== 'canceled') {
               if (window.flutterOnChunkEnd) window.flutterOnChunkEnd($activeSessionId);
@@ -298,33 +381,62 @@ class _TodayTabState extends State<TodayTab> {
     _resumeAudioFromIndex(0);
   }
 
-  List<String> _buildSafeChunks(String text) {
-    final List<String> chunks = [];
-    final rawParts = text.split(RegExp(r'(?<=[.?!;\n])\s+'));
+  // Construye fragmentos manteniendo el offset absoluto exacto en el texto
+  List<_TextChunk> _buildSafeChunks(String fullText, int startOffset) {
+    final String text = fullText.substring(startOffset);
+    final List<_TextChunk> chunks = [];
+    final regex = RegExp(r'(?<=[.?!;\n])\s+');
+    int currentLocalIndex = 0;
 
+    final rawParts = text.split(regex);
     for (final part in rawParts) {
       final trimmed = part.trim();
-      if (trimmed.isEmpty) continue;
+      if (trimmed.isEmpty) {
+        currentLocalIndex += part.length;
+        continue;
+      }
 
-      if (trimmed.length > 180) {
+      int partStartInSub = text.indexOf(part, currentLocalIndex);
+      if (partStartInSub == -1) partStartInSub = currentLocalIndex;
+      currentLocalIndex = partStartInSub + part.length;
+
+      int globalStart = startOffset + partStartInSub;
+
+      if (trimmed.length > 160) {
         final words = trimmed.split(' ');
-        String current = '';
+        String currentBuffer = '';
+        int bufferStart = globalStart;
+        int localWordOffset = 0;
+
         for (final w in words) {
-          if ((current.length + w.length + 1) > 180) {
-            if (current.isNotEmpty) chunks.add(current.trim());
-            current = w;
+          if (w.isEmpty) continue;
+          int wordPosInPart = trimmed.indexOf(w, localWordOffset);
+          if (wordPosInPart == -1) wordPosInPart = localWordOffset;
+          localWordOffset = wordPosInPart + w.length;
+
+          if ((currentBuffer.length + w.length + 1) > 160 && currentBuffer.isNotEmpty) {
+            chunks.add(_TextChunk(currentBuffer.trim(), bufferStart));
+            currentBuffer = w;
+            bufferStart = globalStart + wordPosInPart;
           } else {
-            current = current.isEmpty ? w : '$current $w';
+            if (currentBuffer.isEmpty) {
+              bufferStart = globalStart + wordPosInPart;
+              currentBuffer = w;
+            } else {
+              currentBuffer = '$currentBuffer $w';
+            }
           }
         }
-        if (current.isNotEmpty) chunks.add(current.trim());
+        if (currentBuffer.trim().isNotEmpty) {
+          chunks.add(_TextChunk(currentBuffer.trim(), bufferStart));
+        }
       } else {
-        chunks.add(trimmed);
+        chunks.add(_TextChunk(trimmed, globalStart));
       }
     }
 
     if (chunks.isEmpty && text.trim().isNotEmpty) {
-      chunks.add(text.trim());
+      chunks.add(_TextChunk(text.trim(), startOffset));
     }
 
     return chunks;
@@ -343,7 +455,6 @@ class _TodayTabState extends State<TodayTab> {
 
     _playSessionId++;
     final currentSession = _playSessionId;
-    _highlightTimer?.cancel();
 
     if (startIndex >= _wordMatches.length) {
       _stopAudio();
@@ -364,13 +475,12 @@ class _TodayTabState extends State<TodayTab> {
     });
 
     if (kIsWeb) {
-      _startDynamicWebHighlight(_cachedCleanText, _currentRate, startIndex, currentSession);
-      _textChunks = _buildSafeChunks(textToSpeak);
+      _textChunks = _buildSafeChunks(_cachedCleanText, startChar);
 
       if (_textChunks.isNotEmpty) {
         final first = _textChunks[0];
         _currentChunkIndex = 1;
-        _speakDirectWeb(first, currentSession);
+        _speakDirectWeb(first.text, currentSession, first.globalStartOffset);
       } else {
         _stopAudio();
       }
@@ -399,46 +509,6 @@ class _TodayTabState extends State<TodayTab> {
     });
 
     _resumeAudioFromIndex(targetIndex);
-  }
-
-  void _startDynamicWebHighlight(String text, double rate, int startIndex, int activeSessionId) {
-    _highlightTimer?.cancel();
-    final double msPerChar = 68.0 / rate;
-    int index = startIndex;
-
-    void scheduleNextWord() {
-      if (!_isPlaying || activeSessionId != _playSessionId || index >= _wordMatches.length) {
-        if (index >= _wordMatches.length && activeSessionId == _playSessionId) {
-          _stopAudio();
-        }
-        return;
-      }
-
-      final match = _wordMatches[index];
-      final word = text.substring(match.start, match.end);
-
-      if (mounted) {
-        setState(() {
-          _currentWordIndex = index;
-          _currentWordStart = match.start;
-          _currentWordEnd = match.end;
-        });
-      }
-
-      double durationMs = (word.length * msPerChar).clamp(160.0 / rate, 800.0 / rate);
-
-      if (word.endsWith('.') || word.endsWith('!') || word.endsWith('?')) {
-        durationMs += (280.0 / rate);
-      } else if (word.endsWith(',') || word.endsWith(';') || word.endsWith(':')) {
-        durationMs += (140.0 / rate);
-      }
-
-      index++;
-      _highlightTimer = Timer(Duration(milliseconds: durationMs.round()), scheduleNextWord);
-    }
-
-    // Arranque inmediato (0 ms) sin pausas de espera
-    scheduleNextWord();
   }
 
   @override
