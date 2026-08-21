@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import '../models/reading_model.dart';
@@ -33,14 +34,13 @@ class _TodayTabState extends State<TodayTab> {
   late FlutterTts _flutterTts;
   bool _isPlaying = false;
 
-  // Variables para la velocidad de reproducción
-  double _speechRate = 0.5;
-  String _speedLabel = "1.0x";
+  // Manejo de velocidades
+  int _speedIndex = 0; // 0: 1.0x, 1: 1.5x, 2: 2.0x
+  final List<String> _speedLabels = ["1.0x", "1.5x", "2.0x"];
 
-  // Variables para el seguimiento de la palabra actual
+  // Subrayado de palabra
   int _currentWordStart = 0;
   int _currentWordEnd = 0;
-  String _processedText = "";
 
   static const List<String> _meses = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -57,47 +57,75 @@ class _TodayTabState extends State<TodayTab> {
     _initTts();
   }
 
-  void _initTts() {
+  // Obtiene el speechRate correcto según la plataforma (Web vs Móvil nativo)
+  double _getCalculatedSpeechRate(int index) {
+    if (kIsWeb) {
+      if (index == 1) return 1.4; // 1.5x en Web
+      if (index == 2) return 1.8; // 2.0x en Web
+      return 1.0;                 // 1.0x en Web
+    } else {
+      if (index == 1) return 0.7; // 1.5x en Android/iOS
+      if (index == 2) return 0.9; // 2.0x en Android/iOS
+      return 0.5;                 // 1.0x en Android/iOS
+    }
+  }
+
+  void _initTts() async {
     _flutterTts = FlutterTts();
-    _flutterTts.setLanguage("es");
-    _flutterTts.setSpeechRate(_speechRate);
-    _flutterTts.setVolume(1.0);
-    _flutterTts.setPitch(1.0);
+
+    // Idioma compatible con navegadores web móviles y apps
+    await _flutterTts.setLanguage("es-ES");
+    await _flutterTts.setSpeechRate(_getCalculatedSpeechRate(_speedIndex));
+    await _flutterTts.setVolume(1.0);
+    await _flutterTts.setPitch(1.0);
+
+    if (kIsWeb) {
+      await _flutterTts.awaitSpeakCompletion(true);
+    }
 
     _flutterTts.setStartHandler(() {
-      setState(() => _isPlaying = true);
+      if (mounted) setState(() => _isPlaying = true);
     });
 
     _flutterTts.setCompletionHandler(() {
-      setState(() {
-        _isPlaying = false;
-        _currentWordStart = 0;
-        _currentWordEnd = 0;
-      });
+      if (mounted) {
+        setState(() {
+          _isPlaying = false;
+          _currentWordStart = 0;
+          _currentWordEnd = 0;
+        });
+      }
     });
 
     _flutterTts.setCancelHandler(() {
-      setState(() {
-        _isPlaying = false;
-        _currentWordStart = 0;
-        _currentWordEnd = 0;
-      });
+      if (mounted) {
+        setState(() {
+          _isPlaying = false;
+          _currentWordStart = 0;
+          _currentWordEnd = 0;
+        });
+      }
     });
 
     _flutterTts.setErrorHandler((msg) {
-      setState(() {
-        _isPlaying = false;
-        _currentWordStart = 0;
-        _currentWordEnd = 0;
-      });
+      debugPrint("TTS Error: $msg");
+      if (mounted) {
+        setState(() {
+          _isPlaying = false;
+          _currentWordStart = 0;
+          _currentWordEnd = 0;
+        });
+      }
     });
 
-    // Callback para detectar el progreso y rango de cada palabra hablada
+    // Subrayado en tiempo real (se activa en plataformas compatibles)
     _flutterTts.setProgressHandler((String text, int start, int end, String word) {
-      setState(() {
-        _currentWordStart = start;
-        _currentWordEnd = end;
-      });
+      if (mounted && _isPlaying) {
+        setState(() {
+          _currentWordStart = start;
+          _currentWordEnd = end;
+        });
+      }
     });
   }
 
@@ -108,21 +136,14 @@ class _TodayTabState extends State<TodayTab> {
   }
 
   void _cycleSpeed() async {
-    if (_speedLabel == "1.0x") {
-      _speechRate = 0.75; // Equivalente a ~1.5x
-      _speedLabel = "1.5x";
-    } else if (_speedLabel == "1.5x") {
-      _speechRate = 1.0; // Equivalente a ~2.0x
-      _speedLabel = "2.0x";
-    } else {
-      _speechRate = 0.5; // Velocidad normal 1.0x
-      _speedLabel = "1.0x";
-    }
+    setState(() {
+      _speedIndex = (_speedIndex + 1) % _speedLabels.length;
+    });
 
-    await _flutterTts.setSpeechRate(_speechRate);
-    setState(() {});
+    final newRate = _getCalculatedSpeechRate(_speedIndex);
+    await _flutterTts.setSpeechRate(newRate);
 
-    // Si ya está reproduciendo, reinicia con la nueva velocidad
+    // Si ya está leyendo, reinicia con la nueva velocidad
     if (_isPlaying && widget.todayReading.chapterContent != null) {
       await _flutterTts.stop();
       _speakText(widget.todayReading.chapterContent!);
@@ -134,15 +155,21 @@ class _TodayTabState extends State<TodayTab> {
 
     if (_isPlaying) {
       await _flutterTts.stop();
-      setState(() {
-        _isPlaying = false;
-        _currentWordStart = 0;
-        _currentWordEnd = 0;
-      });
+      if (mounted) {
+        setState(() {
+          _isPlaying = false;
+          _currentWordStart = 0;
+          _currentWordEnd = 0;
+        });
+      }
     } else {
-      _processedText = text;
-      await _flutterTts.speak(_processedText);
+      // En Web iniciamos el estado antes para feedback visual inmediato
       setState(() => _isPlaying = true);
+      final result = await _flutterTts.speak(text);
+      if (result != 1 && !kIsWeb) {
+        // En algunas plataformas nativas, 1 significa éxito inmediato
+        setState(() => _isPlaying = false);
+      }
     }
   }
 
@@ -311,18 +338,17 @@ class _TodayTabState extends State<TodayTab> {
                 ),
                 Row(
                   children: [
-                    // Botón para alternar velocidad (1.0x, 1.5x, 2.0x)
                     InkWell(
                       onTap: _cycleSpeed,
                       borderRadius: BorderRadius.circular(8),
                       child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
                         decoration: BoxDecoration(
                           color: theme.primaryColor.withOpacity(0.12),
                           borderRadius: BorderRadius.circular(8),
                         ),
                         child: Text(
-                          _speedLabel,
+                          _speedLabels[_speedIndex],
                           style: TextStyle(
                             fontSize: 12,
                             fontWeight: FontWeight.bold,
