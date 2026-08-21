@@ -39,37 +39,24 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _probarConexionDevocional() async {
     final devotionalService = DevotionalService();
     try {
-      print('=== INICIANDO PRUEBA DEVOCIONAL Y ACTIVIDADES ===');
-      
       final int anio = DateTime.now().year;
       final int mes = DateTime.now().month;
       final int dia = DateTime.now().day;
 
       final planMes = await devotionalService.leerPlanMes(anio, mes);
-      print('Plan completo del mes ($anio-$mes): $planMes');
 
       if (planMes != null && planMes.containsKey('days')) {
         final daysMap = planMes['days'] as Map<String, dynamic>? ?? {};
         final datosHoy = daysMap[dia.toString()];
 
         if (datosHoy != null) {
-          print('--- DATOS DEL DÍA $dia ---');
-          print('Actividad del día: ${datosHoy['activity']}');
-          print('Versículo clave: ${datosHoy['keyVerse']}');
-          print('Texto del capítulo: ${datosHoy['chapterText'] != null ? "Disponible" : "No asignado"}');
-        } else {
-          print('No hay actividad ni lectura configurada para el día $dia de este mes.');
+          debugPrint('Datos cargados para el día: $dia');
         }
-      } else {
-        print('No se encontró plan configurado para este mes ($anio-$mes).');
       }
 
-      final capitulo = await devotionalService.leerCapitulo('1 Reyes', 18);
-      print('Capítulo 1 Reyes 18: $capitulo');
-      
-      print('=== PRUEBA COMPLETADA CON ÉXITO ===');
+      await devotionalService.leerCapitulo('1 Reyes', 18);
     } catch (e) {
-      print('=== ERROR EN PRUEBA DEVOCIONAL ===: $e');
+      debugPrint('Error en prueba devocional: $e');
     }
   }
 
@@ -187,7 +174,7 @@ class _HomeScreenState extends State<HomeScreen> {
           }
         } else {
           if (i > 0 || streak > 0) {
-            break;
+            break; 
           }
         }
       }
@@ -252,7 +239,7 @@ class _HomeScreenState extends State<HomeScreen> {
       } else {
         await supabase.from('user_progress').delete().match({
           'profile_id': profileId,
-          'reading_id': reading.id,
+          'reading_id': reading.id, 
         });
 
         _recalculateStats();
@@ -371,9 +358,16 @@ class _HomeScreenState extends State<HomeScreen> {
                   onToggle: _toggleReadingStatus, 
                   streakCount: _currentStreak,
                   currentFontSize: _bibleFontSize,
+                  isLoggedIn: _activeProfileId != null || supabase.auth.currentUser != null,
+                  activeProfileId: _activeProfileId ?? supabase.auth.currentUser?.id,
                   onFontSizeChanged: (newSize) {
                     setState(() {
                       _bibleFontSize = newSize;
+                    });
+                  },
+                  onGoToProfile: () {
+                    setState(() {
+                      _currentIndex = 2;
                     });
                   },
                 ),

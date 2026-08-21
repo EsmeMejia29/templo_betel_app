@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import '../models/reading_model.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class TodayTab extends StatefulWidget {
   final DevotionalReading todayReading;
@@ -8,6 +9,9 @@ class TodayTab extends StatefulWidget {
   final int streakCount;
   final double currentFontSize;
   final ValueChanged<double> onFontSizeChanged;
+  final VoidCallback? onGoToProfile;
+  final bool isLoggedIn;
+  final String? activeProfileId;
 
   const TodayTab({
     super.key,
@@ -16,6 +20,9 @@ class TodayTab extends StatefulWidget {
     required this.streakCount,
     required this.currentFontSize,
     required this.onFontSizeChanged,
+    this.onGoToProfile,
+    required this.isLoggedIn,
+    this.activeProfileId,
   });
 
   @override
@@ -309,53 +316,104 @@ class _TodayTabState extends State<TodayTab> {
               width: double.infinity,
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: const Color(0xFF6C5CE7).withOpacity(0.08),
+                color: theme.primaryColor.withOpacity(0.08),
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: const Color(0xFF6C5CE7).withOpacity(0.3)),
+                border: Border.all(color: theme.primaryColor.withOpacity(0.25)),
               ),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Row(
+                  Row(
                     children: [
-                      Icon(Icons.sports_esports_rounded, color: Color(0xFF6C5CE7)),
-                      SizedBox(width: 8),
+                      Icon(Icons.sports_esports_rounded, color: theme.primaryColor),
+                      const SizedBox(width: 8),
                       Text(
                         "¡Pon a prueba lo aprendido!",
-                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16, color: Color(0xFF6C5CE7)),
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 16,
+                          color: theme.primaryColor,
+                        ),
                       ),
                     ],
                   ),
                   const SizedBox(height: 6),
-                  const Text(
+                  Text(
                     "Responde el cuestionario interactivo de este capítulo para recapitular tu devocional.",
-                    style: TextStyle(fontSize: 13, color: Colors.black87),
+                    style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
                   ),
+                  if (!widget.isLoggedIn) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: Colors.amber.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.amber.shade600),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(Icons.lock_outline_rounded, size: 18, color: Colors.amber.shade900),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              "Debes iniciar sesión para jugar y guardar tu progreso en el ranking.",
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: Colors.amber.shade900,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 14),
                   SizedBox(
                     width: double.infinity,
                     height: 46,
                     child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF6C5CE7),
+                        backgroundColor: widget.isLoggedIn ? theme.primaryColor : Colors.amber.shade700,
                         foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        elevation: 0,
                       ),
-                      onPressed: () {
-                        showModalBottomSheet(
-                          context: context,
-                          isScrollControlled: true,
-                          shape: const RoundedRectangleBorder(
-                            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-                          ),
-                          builder: (context) => _QuizViewerModal(
-                            preguntas: widget.todayReading.quiz!,
-                            titulo: widget.todayReading.bookAndChapter,
-                          ),
-                        );
-                      },
-                      icon: const Icon(Icons.play_arrow_rounded),
-                      label: const Text("JUGAR CUESTIONARIO 🎯", style: TextStyle(fontWeight: FontWeight.bold)),
+                      onPressed: widget.isLoggedIn
+                          ? () {
+                              showModalBottomSheet(
+                                context: context,
+                                isScrollControlled: true,
+                                shape: const RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+                                ),
+                                builder: (context) => _QuizViewerModal(
+                                  preguntas: widget.todayReading.quiz!,
+                                  titulo: widget.todayReading.bookAndChapter,
+                                  activeProfileId: widget.activeProfileId,
+                                ),
+                              );
+                            }
+                          : () {
+                              if (widget.onGoToProfile != null) {
+                                widget.onGoToProfile!();
+                              }
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('Inicia sesión en tu perfil para registrar tu puntaje 🎯'),
+                                  backgroundColor: Colors.orange,
+                                  duration: Duration(seconds: 2),
+                                ),
+                              );
+                            },
+                      icon: Icon(widget.isLoggedIn ? Icons.play_arrow_rounded : Icons.login_rounded),
+                      label: Text(
+                        widget.isLoggedIn ? "JUGAR CUESTIONARIO 🎯" : "INICIAR SESIÓN PARA JUGAR",
+                        style: const TextStyle(fontWeight: FontWeight.bold, letterSpacing: 0.3),
+                      ),
                     ),
                   ),
                 ],
@@ -373,8 +431,13 @@ class _TodayTabState extends State<TodayTab> {
 class _QuizViewerModal extends StatefulWidget {
   final List<dynamic> preguntas;
   final String titulo;
+  final String? activeProfileId;
 
-  const _QuizViewerModal({required this.preguntas, required this.titulo});
+  const _QuizViewerModal({
+    required this.preguntas,
+    required this.titulo,
+    this.activeProfileId,
+  });
 
   @override
   State<_QuizViewerModal> createState() => _QuizViewerModalState();
@@ -384,8 +447,27 @@ class _QuizViewerModalState extends State<_QuizViewerModal> {
   final Map<int, int> _respuestasSeleccionadas = {};
   int _aciertos = 0;
   bool _revisado = false;
+  bool _isSaving = false;
+  bool _hasSaved = false;
+
+  late final DateTime _startTime;
+  Duration _elapsedTime = Duration.zero;
+
+  @override
+  void initState() {
+    super.initState();
+    _startTime = DateTime.now();
+  }
+
+  String _formatDuration(Duration duration) {
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final minutes = twoDigits(duration.inMinutes.remainder(60));
+    final seconds = twoDigits(duration.inSeconds.remainder(60));
+    return '$minutes:$seconds';
+  }
 
   void _evaluarRespuestas() {
+    _elapsedTime = DateTime.now().difference(_startTime);
     int total = 0;
     for (int i = 0; i < widget.preguntas.length; i++) {
       final correcta = widget.preguntas[i]['respuesta_correcta'] ?? 0;
@@ -397,10 +479,64 @@ class _QuizViewerModalState extends State<_QuizViewerModal> {
     });
   }
 
+  Future<void> _guardarProgresoEnRanking() async {
+    final profileId = widget.activeProfileId ?? Supabase.instance.client.auth.currentUser?.id;
+
+    if (profileId == null || profileId.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('⚠️ No se detectó un usuario activo. Inicia sesión.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    setState(() => _isSaving = true);
+
+    try {
+      await Supabase.instance.client.from('quiz_rankings').insert({
+        'profile_id': profileId,
+        'reading_title': widget.titulo,
+        'correct_answers': _aciertos,
+        'total_questions': widget.preguntas.length,
+        'time_seconds': _elapsedTime.inSeconds,
+      });
+
+      if (mounted) {
+        setState(() {
+          _hasSaved = true;
+          _isSaving = false;
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('¡Puntaje guardado en el ranking con éxito! 🏆'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      debugPrint("Error guardando en ranking: $e");
+      if (mounted) {
+        setState(() => _isSaving = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error al guardar: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
     return Container(
-      height: MediaQuery.of(context).size.height * 0.85,
+      height: MediaQuery.of(context).size.height * 0.88,
       padding: const EdgeInsets.all(20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -411,32 +547,96 @@ class _QuizViewerModalState extends State<_QuizViewerModal> {
               Expanded(
                 child: Text(
                   'Cuestionario: ${widget.titulo}',
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                    color: theme.primaryColor,
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
-              IconButton(icon: const Icon(Icons.close), onPressed: () => Navigator.pop(context)),
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => Navigator.pop(context),
+              ),
             ],
           ),
-          if (_revisado)
+          if (_revisado) ...[
             Container(
-              margin: const EdgeInsets.symmetric(vertical: 10),
+              margin: const EdgeInsets.symmetric(vertical: 8),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: _aciertos == widget.preguntas.length ? Colors.green[50] : Colors.amber[50],
+                color: _aciertos == widget.preguntas.length ? Colors.green.shade50 : Colors.amber.shade50,
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: _aciertos == widget.preguntas.length ? Colors.green : Colors.amber),
+                border: Border.all(
+                  color: _aciertos == widget.preguntas.length ? Colors.green : Colors.amber.shade700,
+                ),
               ),
               child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Icon(_aciertos == widget.preguntas.length ? Icons.celebration : Icons.stars,
-                      color: _aciertos == widget.preguntas.length ? Colors.green : Colors.amber[800]),
-                  const SizedBox(width: 10),
-                  Text('¡Puntaje obtenido: $_aciertos / ${widget.preguntas.length}!',
-                      style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                  Row(
+                    children: [
+                      Icon(
+                        _aciertos == widget.preguntas.length ? Icons.celebration : Icons.stars,
+                        color: _aciertos == widget.preguntas.length ? Colors.green.shade700 : Colors.amber.shade800,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        '¡Puntaje: $_aciertos / ${widget.preguntas.length}!',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
+                    ],
+                  ),
+                  Row(
+                    children: [
+                      Icon(Icons.timer_outlined, size: 18, color: Colors.grey.shade700),
+                      const SizedBox(width: 4),
+                      Text(
+                        _formatDuration(_elapsedTime),
+                        style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.grey.shade800),
+                      ),
+                    ],
+                  ),
                 ],
               ),
             ),
+            if (!_hasSaved)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8.0),
+                child: OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: theme.primaryColor,
+                    side: BorderSide(color: theme.primaryColor),
+                    minimumSize: const Size.fromHeight(40),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                  ),
+                  onPressed: _isSaving ? null : _guardarProgresoEnRanking,
+                  icon: _isSaving
+                      ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Icon(Icons.leaderboard_rounded, size: 18),
+                  label: Text(
+                    _isSaving ? 'Guardando...' : 'Guardar progreso para el ranking 🏆',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                  ),
+                ),
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8.0),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: const [
+                    Icon(Icons.check_circle, color: Colors.green, size: 16),
+                    SizedBox(width: 6),
+                    Text(
+                      'Progreso registrado en el ranking',
+                      style: TextStyle(color: Colors.green, fontWeight: FontWeight.w600, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+          ],
           const Divider(),
           Expanded(
             child: ListView.builder(
@@ -449,32 +649,48 @@ class _QuizViewerModalState extends State<_QuizViewerModal> {
 
                 return Card(
                   margin: const EdgeInsets.only(bottom: 16),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  elevation: 1,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: BorderSide(color: Colors.grey.shade200),
+                  ),
                   child: Padding(
                     padding: const EdgeInsets.all(14.0),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('${index + 1}. ${item['pregunta']}',
-                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                        Text(
+                          '${index + 1}. ${item['pregunta']}',
+                          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                        ),
                         const SizedBox(height: 10),
                         ...List.generate(opciones.length, (opcIndex) {
                           Color? colorFondo;
+                          BorderSide borderSide = BorderSide(
+                            color: seleccionada == opcIndex ? theme.primaryColor : Colors.grey.shade300,
+                            width: seleccionada == opcIndex ? 1.5 : 1.0,
+                          );
+
                           if (_revisado) {
-                            if (opcIndex == correcta) colorFondo = Colors.green.withOpacity(0.2);
-                            else if (seleccionada == opcIndex) colorFondo = Colors.red.withOpacity(0.2);
+                            if (opcIndex == correcta) {
+                              colorFondo = Colors.green.withOpacity(0.15);
+                              borderSide = const BorderSide(color: Colors.green, width: 1.5);
+                            } else if (seleccionada == opcIndex) {
+                              colorFondo = Colors.red.withOpacity(0.15);
+                              borderSide = const BorderSide(color: Colors.redAccent, width: 1.5);
+                            }
                           }
+
                           return Container(
                             margin: const EdgeInsets.only(bottom: 6),
                             decoration: BoxDecoration(
                               color: colorFondo,
                               borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: seleccionada == opcIndex ? const Color(0xFF6C5CE7) : Colors.grey.shade300,
-                              ),
+                              border: Border.fromBorderSide(borderSide),
                             ),
                             child: RadioListTile<int>(
                               dense: true,
+                              activeColor: theme.primaryColor,
                               value: opcIndex,
                               groupValue: _respuestasSeleccionadas[index],
                               title: Text(opciones[opcIndex].toString()),
@@ -485,8 +701,14 @@ class _QuizViewerModalState extends State<_QuizViewerModal> {
                         if (_revisado && item['explicacion'] != null)
                           Padding(
                             padding: const EdgeInsets.only(top: 8.0),
-                            child: Text('💡 ${item['explicacion']}',
-                                style: TextStyle(fontSize: 12, color: Colors.grey[700], fontStyle: FontStyle.italic)),
+                            child: Text(
+                              '💡 ${item['explicacion']}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade700,
+                                fontStyle: FontStyle.italic,
+                              ),
+                            ),
                           ),
                       ],
                     ),
@@ -500,15 +722,18 @@ class _QuizViewerModalState extends State<_QuizViewerModal> {
             height: 48,
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFF6C5CE7),
+                backgroundColor: theme.primaryColor,
                 foregroundColor: Colors.white,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                elevation: 0,
               ),
               onPressed: _respuestasSeleccionadas.length < widget.preguntas.length
                   ? null
                   : (_revisado ? () => Navigator.pop(context) : _evaluarRespuestas),
-              child: Text(_revisado ? 'Cerrar Juego' : 'Comprobar Respuestas',
-                  style: const TextStyle(fontWeight: FontWeight.bold)),
+              child: Text(
+                _revisado ? 'Cerrar Juego' : 'Comprobar Respuestas',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
             ),
           ),
         ],
