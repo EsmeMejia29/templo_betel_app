@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_tts/flutter_tts.dart';
@@ -34,13 +35,15 @@ class _TodayTabState extends State<TodayTab> {
   late FlutterTts _flutterTts;
   bool _isPlaying = false;
 
-  // Manejo de velocidades
-  int _speedIndex = 0; // 0: 1.0x, 1: 1.5x, 2: 2.0x
+  // Velocidades: 1.0x, 1.5x, 2.0x
+  int _speedIndex = 0;
   final List<String> _speedLabels = ["1.0x", "1.5x", "2.0x"];
+  final List<double> _speedMultipliers = [1.0, 1.5, 2.0];
 
   // Subrayado de palabra
   int _currentWordStart = 0;
   int _currentWordEnd = 0;
+  Timer? _highlightTimer;
 
   static const List<String> _meses = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
@@ -57,70 +60,34 @@ class _TodayTabState extends State<TodayTab> {
     _initTts();
   }
 
-  // Obtiene el speechRate correcto según la plataforma (Web vs Móvil nativo)
-  double _getCalculatedSpeechRate(int index) {
-    if (kIsWeb) {
-      if (index == 1) return 1.4; // 1.5x en Web
-      if (index == 2) return 1.8; // 2.0x en Web
-      return 1.0;                 // 1.0x en Web
-    } else {
-      if (index == 1) return 0.7; // 1.5x en Android/iOS
-      if (index == 2) return 0.9; // 2.0x en Android/iOS
-      return 0.5;                 // 1.0x en Android/iOS
-    }
-  }
-
-  void _initTts() async {
+  void _initTts() {
     _flutterTts = FlutterTts();
 
-    // Idioma compatible con navegadores web móviles y apps
-    await _flutterTts.setLanguage("es-ES");
-    await _flutterTts.setSpeechRate(_getCalculatedSpeechRate(_speedIndex));
-    await _flutterTts.setVolume(1.0);
-    await _flutterTts.setPitch(1.0);
-
-    if (kIsWeb) {
-      await _flutterTts.awaitSpeakCompletion(true);
-    }
+    // Configuración base
+    _flutterTts.setLanguage("es-US");
+    _flutterTts.setVolume(1.0);
+    _flutterTts.setPitch(1.0);
 
     _flutterTts.setStartHandler(() {
       if (mounted) setState(() => _isPlaying = true);
     });
 
     _flutterTts.setCompletionHandler(() {
-      if (mounted) {
-        setState(() {
-          _isPlaying = false;
-          _currentWordStart = 0;
-          _currentWordEnd = 0;
-        });
-      }
+      _stopPlayback();
     });
 
     _flutterTts.setCancelHandler(() {
-      if (mounted) {
-        setState(() {
-          _isPlaying = false;
-          _currentWordStart = 0;
-          _currentWordEnd = 0;
-        });
-      }
+      _stopPlayback();
     });
 
     _flutterTts.setErrorHandler((msg) {
-      debugPrint("TTS Error: $msg");
-      if (mounted) {
-        setState(() {
-          _isPlaying = false;
-          _currentWordStart = 0;
-          _currentWordEnd = 0;
-        });
-      }
+      debugPrint("TTS error: $msg");
+      _stopPlayback();
     });
 
-    // Subrayado en tiempo real (se activa en plataformas compatibles)
+    // Evento nativo de palabra (usado en Android/iOS nativo)
     _flutterTts.setProgressHandler((String text, int start, int end, String word) {
-      if (mounted && _isPlaying) {
+      if (mounted && _isPlaying && !kIsWeb) {
         setState(() {
           _currentWordStart = start;
           _currentWordEnd = end;
@@ -129,10 +96,27 @@ class _TodayTabState extends State<TodayTab> {
     });
   }
 
-  @override
-  void dispose() {
-    _flutterTts.stop();
-    super.dispose();
+  double _getSpeechRate() {
+    final mult = _speedMultipliers[_speedIndex];
+    if (kIsWeb) {
+      // En Web la escala va de 0.1 a 2.0 (1.0 es normal)
+      return mult;
+    } else {
+      // En nativo (Android/iOS) 0.5 es normal
+      return 0.5 * mult;
+    }
+  }
+
+  void _stopPlayback() {
+    _highlightTimer?.cancel();
+    _highlightTimer = null;
+    if (mounted) {
+      setState(() {
+        _isPlaying = false;
+        _currentWordStart = 0;
+        _currentWordEnd = 0;
+      });
+    }
   }
 
   void _cycleSpeed() async {
@@ -140,37 +124,97 @@ class _TodayTabState extends State<TodayTab> {
       _speedIndex = (_speedIndex + 1) % _speedLabels.length;
     });
 
-    final newRate = _getCalculatedSpeechRate(_speedIndex);
-    await _flutterTts.setSpeechRate(newRate);
+    await _flutterTts.setSpeechRate(_getSpeechRate());
 
-    // Si ya está leyendo, reinicia con la nueva velocidad
     if (_isPlaying && widget.todayReading.chapterContent != null) {
       await _flutterTts.stop();
+      _highlightTimer?.cancel();
       _speakText(widget.todayReading.chapterContent!);
     }
   }
 
-  void _speakText(String text) async {
-    if (text.isEmpty) return;
+  void _speakText(String rawText) async {
+    if (rawText.isEmpty) return;
 
     if (_isPlaying) {
       await _flutterTts.stop();
-      if (mounted) {
-        setState(() {
-          _isPlaying = false;
-          _currentWordStart = 0;
-          _currentWordEnd = 0;
-        });
-      }
-    } else {
-      // En Web iniciamos el estado antes para feedback visual inmediato
-      setState(() => _isPlaying = true);
-      final result = await _flutterTts.speak(text);
-      if (result != 1 && !kIsWeb) {
-        // En algunas plataformas nativas, 1 significa éxito inmediato
-        setState(() => _isPlaying = false);
-      }
+      _stopPlayback();
+      return;
     }
+
+    // Limpieza de caracteres que congelan motores de voz en Web
+    String cleanText = rawText
+        .replaceAll('\r', '')
+        .replaceAll(RegExp(r'[\$\#\_\@]'), '')
+        .trim();
+
+    setState(() {
+      _isPlaying = true;
+      _currentWordStart = 0;
+      _currentWordEnd = 0;
+    });
+
+    await _flutterTts.setLanguage("es-US");
+    await _flutterTts.setSpeechRate(_getSpeechRate());
+
+    // Iniciar simulación de subrayado para Web móvil
+    if (kIsWeb) {
+      _startWebHighlightSimulation(cleanText);
+    }
+
+    try {
+      await _flutterTts.speak(cleanText);
+    } catch (e) {
+      debugPrint("Error al ejecutar speak: $e");
+      _stopPlayback();
+    }
+  }
+
+  // Permite que el subrayado funcione en navegadores móviles (Vercel)
+  void _startWebHighlightSimulation(String text) {
+    _highlightTimer?.cancel();
+
+    final wordsWithIndices = <Map<String, int>>[];
+    final regExp = RegExp(r'\S+');
+    final matches = regExp.allMatches(text);
+
+    for (final m in matches) {
+      wordsWithIndices.add({'start': m.start, 'end': m.end});
+    }
+
+    if (wordsWithIndices.isEmpty) return;
+
+    // Promedio de 170 palabras por minuto en español a velocidad normal
+    final double baseMsPerWord = (60000 / 170) / _speedMultipliers[_speedIndex];
+    int currentIdx = 0;
+
+    _highlightTimer = Timer.periodic(
+      Duration(milliseconds: baseMsPerWord.round()),
+      (timer) {
+        if (!_isPlaying || currentIdx >= wordsWithIndices.length) {
+          timer.cancel();
+          if (currentIdx >= wordsWithIndices.length) {
+            _stopPlayback();
+          }
+          return;
+        }
+
+        if (mounted) {
+          setState(() {
+            _currentWordStart = wordsWithIndices[currentIdx]['start']!;
+            _currentWordEnd = wordsWithIndices[currentIdx]['end']!;
+          });
+        }
+        currentIdx++;
+      },
+    );
+  }
+
+  @override
+  void dispose() {
+    _highlightTimer?.cancel();
+    _flutterTts.stop();
+    super.dispose();
   }
 
   @override
@@ -338,6 +382,7 @@ class _TodayTabState extends State<TodayTab> {
                 ),
                 Row(
                   children: [
+                    // Botón de velocidad (1.0x, 1.5x, 2.0x)
                     InkWell(
                       onTap: _cycleSpeed,
                       borderRadius: BorderRadius.circular(8),
