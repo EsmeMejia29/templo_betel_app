@@ -33,6 +33,15 @@ class _TodayTabState extends State<TodayTab> {
   late FlutterTts _flutterTts;
   bool _isPlaying = false;
 
+  // Variables para la velocidad de reproducción
+  double _speechRate = 0.5;
+  String _speedLabel = "1.0x";
+
+  // Variables para el seguimiento de la palabra actual
+  int _currentWordStart = 0;
+  int _currentWordEnd = 0;
+  String _processedText = "";
+
   static const List<String> _meses = [
     'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
     'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
@@ -51,18 +60,44 @@ class _TodayTabState extends State<TodayTab> {
   void _initTts() {
     _flutterTts = FlutterTts();
     _flutterTts.setLanguage("es");
-    _flutterTts.setSpeechRate(0.5);
+    _flutterTts.setSpeechRate(_speechRate);
     _flutterTts.setVolume(1.0);
     _flutterTts.setPitch(1.0);
 
     _flutterTts.setStartHandler(() {
       setState(() => _isPlaying = true);
     });
+
     _flutterTts.setCompletionHandler(() {
-      setState(() => _isPlaying = false);
+      setState(() {
+        _isPlaying = false;
+        _currentWordStart = 0;
+        _currentWordEnd = 0;
+      });
     });
+
+    _flutterTts.setCancelHandler(() {
+      setState(() {
+        _isPlaying = false;
+        _currentWordStart = 0;
+        _currentWordEnd = 0;
+      });
+    });
+
     _flutterTts.setErrorHandler((msg) {
-      setState(() => _isPlaying = false);
+      setState(() {
+        _isPlaying = false;
+        _currentWordStart = 0;
+        _currentWordEnd = 0;
+      });
+    });
+
+    // Callback para detectar el progreso y rango de cada palabra hablada
+    _flutterTts.setProgressHandler((String text, int start, int end, String word) {
+      setState(() {
+        _currentWordStart = start;
+        _currentWordEnd = end;
+      });
     });
   }
 
@@ -72,20 +107,41 @@ class _TodayTabState extends State<TodayTab> {
     super.dispose();
   }
 
+  void _cycleSpeed() async {
+    if (_speedLabel == "1.0x") {
+      _speechRate = 0.75; // Equivalente a ~1.5x
+      _speedLabel = "1.5x";
+    } else if (_speedLabel == "1.5x") {
+      _speechRate = 1.0; // Equivalente a ~2.0x
+      _speedLabel = "2.0x";
+    } else {
+      _speechRate = 0.5; // Velocidad normal 1.0x
+      _speedLabel = "1.0x";
+    }
+
+    await _flutterTts.setSpeechRate(_speechRate);
+    setState(() {});
+
+    // Si ya está reproduciendo, reinicia con la nueva velocidad
+    if (_isPlaying && widget.todayReading.chapterContent != null) {
+      await _flutterTts.stop();
+      _speakText(widget.todayReading.chapterContent!);
+    }
+  }
+
   void _speakText(String text) async {
     if (text.isEmpty) return;
 
-    String cleanText = text
-        .replaceAll('\n', ' ')
-        .replaceAll(RegExp(r'\d+'), '')
-        .replaceAll(RegExp(r'[\$\#\_\@]'), '')
-        .trim();
-
     if (_isPlaying) {
       await _flutterTts.stop();
-      setState(() => _isPlaying = false);
+      setState(() {
+        _isPlaying = false;
+        _currentWordStart = 0;
+        _currentWordEnd = 0;
+      });
     } else {
-      await _flutterTts.speak(cleanText);
+      _processedText = text;
+      await _flutterTts.speak(_processedText);
       setState(() => _isPlaying = true);
     }
   }
@@ -255,6 +311,27 @@ class _TodayTabState extends State<TodayTab> {
                 ),
                 Row(
                   children: [
+                    // Botón para alternar velocidad (1.0x, 1.5x, 2.0x)
+                    InkWell(
+                      onTap: _cycleSpeed,
+                      borderRadius: BorderRadius.circular(8),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: theme.primaryColor.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          _speedLabel,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                            color: theme.primaryColor,
+                          ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
                     IconButton(
                       icon: Icon(
                         _isPlaying ? Icons.stop_circle_rounded : Icons.play_circle_fill_rounded,
@@ -264,7 +341,7 @@ class _TodayTabState extends State<TodayTab> {
                       tooltip: _isPlaying ? "Detener" : "Escuchar",
                       onPressed: () => _speakText(widget.todayReading.chapterContent!),
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 4),
                     IconButton(
                       icon: Icon(Icons.text_decrease_rounded, color: theme.primaryColor, size: 20),
                       onPressed: widget.currentFontSize > 12.0
@@ -294,15 +371,9 @@ class _TodayTabState extends State<TodayTab> {
                     Icon(Icons.auto_stories, color: theme.primaryColor.withOpacity(0.7), size: 22),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: Text(
-                        widget.todayReading.chapterContent!,
-                        textAlign: TextAlign.justify, 
-                        style: TextStyle(
-                          fontSize: widget.currentFontSize, 
-                          color: Colors.grey.shade800, 
-                          height: 1.6, 
-                          letterSpacing: 0.2,
-                        ),
+                      child: _buildHighlightedContent(
+                        content: widget.todayReading.chapterContent!,
+                        primaryColor: theme.primaryColor,
                       ),
                     ),
                   ],
@@ -347,21 +418,21 @@ class _TodayTabState extends State<TodayTab> {
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       decoration: BoxDecoration(
-                        color: Colors.amber.shade100,
+                        color: const Color(0xFFFFFBEB),
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.amber.shade600),
+                        border: Border.all(color: const Color.fromARGB(255, 253, 203, 138)),
                       ),
                       child: Row(
                         children: [
                           Icon(Icons.lock_outline_rounded, size: 18, color: Colors.amber.shade900),
                           const SizedBox(width: 8),
-                          Expanded(
+                          const Expanded(
                             child: Text(
                               "Debes iniciar sesión para jugar y guardar tu progreso en el ranking.",
                               style: TextStyle(
                                 fontSize: 12,
                                 fontWeight: FontWeight.w600,
-                                color: Colors.amber.shade900,
+                                color: Color(0xFF92400E),
                               ),
                             ),
                           ),
@@ -375,7 +446,7 @@ class _TodayTabState extends State<TodayTab> {
                     height: 46,
                     child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: widget.isLoggedIn ? theme.primaryColor : Colors.amber.shade700,
+                        backgroundColor: widget.isLoggedIn ? theme.primaryColor : const Color(0xFFD97706),
                         foregroundColor: Colors.white,
                         shape: RoundedRectangleBorder(
                           borderRadius: BorderRadius.circular(12),
@@ -422,6 +493,49 @@ class _TodayTabState extends State<TodayTab> {
             const SizedBox(height: 20),
           ],
           const SizedBox(height: 16),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHighlightedContent({
+    required String content,
+    required Color primaryColor,
+  }) {
+    final defaultStyle = TextStyle(
+      fontSize: widget.currentFontSize,
+      color: Colors.grey.shade800,
+      height: 1.6,
+      letterSpacing: 0.2,
+    );
+
+    if (!_isPlaying || _currentWordEnd <= _currentWordStart || _currentWordEnd > content.length) {
+      return Text(
+        content,
+        textAlign: TextAlign.justify,
+        style: defaultStyle,
+      );
+    }
+
+    final before = content.substring(0, _currentWordStart);
+    final highlighted = content.substring(_currentWordStart, _currentWordEnd);
+    final after = content.substring(_currentWordEnd);
+
+    return RichText(
+      textAlign: TextAlign.justify,
+      text: TextSpan(
+        style: defaultStyle,
+        children: [
+          TextSpan(text: before),
+          TextSpan(
+            text: highlighted,
+            style: TextStyle(
+              backgroundColor: primaryColor.withOpacity(0.25),
+              fontWeight: FontWeight.bold,
+              color: primaryColor,
+            ),
+          ),
+          TextSpan(text: after),
         ],
       ),
     );
