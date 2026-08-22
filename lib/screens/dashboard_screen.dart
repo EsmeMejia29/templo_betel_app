@@ -203,8 +203,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _cargarLecturaPorFecha(DateTime fecha) async {
     final String formattedDate = fecha.toIso8601String().split('T')[0];
     
+    setState(() {
+      _isLoadingChapter = true;
+      _isLoadingQuiz = true;
+      // 1. Limpiamos inmediatamente para no mezclar capítulos de otras fechas
+      _bookController.text = '';
+      _contentController.text = '';
+      _verseController.text = '';
+      _verseRefController.text = '';
+      _eventController.text = '';
+      _generatedQuiz = null;
+    });
+
     try {
-      final response = await supabase
+      String? libroYCapitulo;
+
+      // 2. CONSULTA DINÁMICA A FIREBASE SEGÚN LA FECHA ELEGIDA
+      final planMes = await _devotionalService.leerPlanMes(fecha.year, fecha.month);
+      
+      if (planMes != null) {
+        final diaStr = fecha.day.toString();
+        final diaPadded = fecha.day.toString().padLeft(2, '0');
+
+        // Busca el día dinámicamente en cualquier estructura que tenga el documento
+        final lecturaDia = planMes[diaStr] ?? 
+                           planMes[diaPadded] ?? 
+                           (planMes['dias'] is Map ? (planMes['dias'][diaStr] ?? planMes['dias'][diaPadded]) : null) ??
+                           (planMes['days'] is Map ? (planMes['days'][diaStr] ?? planMes['days'][diaPadded]) : null);
+
+        if (lecturaDia != null) {
+          if (lecturaDia is String) {
+            libroYCapitulo = lecturaDia;
+          } else if (lecturaDia is Map) {
+            libroYCapitulo = lecturaDia['lectura'] ?? lecturaDia['book_and_chapter'] ?? lecturaDia['capitulo'];
+          }
+        }
+      }
+
+      final responseSupabase = await supabase
           .from('readings')
           .select()
           .eq('date', formattedDate)
@@ -212,30 +248,40 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       if (!mounted) return;
 
-      if (response != null) {
-        setState(() {
-          _bookController.text = response['book_and_chapter'] ?? '';
-          _verseController.text = response['daily_verse'] ?? '';
-          _verseRefController.text = response['daily_verse_ref'] ?? '';
-          _eventController.text = response['special_event'] ?? '';
-          _generatedQuiz = response['quiz'] as List<dynamic>?;
-          _isUpdating = true;
-        });
-
-        // Carga el texto desde Firebase a partir del título
-        if (_bookController.text.isNotEmpty) {
-          await _obtenerCapituloFirebase(_bookController.text);
-        }
-
-        // Si la lectura en Supabase aún no tenía Quiz, se genera automáticamente
-        if (_generatedQuiz == null || _generatedQuiz!.isEmpty) {
-          _generarQuizSilencioso();
-        }
+      if (responseSupabase != null) {
+        _isUpdating = true;
+        _bookController.text = libroYCapitulo ?? responseSupabase['book_and_chapter'] ?? '';
+        _verseController.text = responseSupabase['daily_verse'] ?? '';
+        _verseRefController.text = responseSupabase['daily_verse_ref'] ?? '';
+        _eventController.text = responseSupabase['special_event'] ?? '';
+        _generatedQuiz = responseSupabase['quiz'] as List<dynamic>?;
       } else {
-        _limpiarFormulario(mantenerFecha: true);
+        _isUpdating = false;
+        if (libroYCapitulo != null) {
+          _bookController.text = libroYCapitulo;
+        }
       }
+
+      if (_bookController.text.trim().isNotEmpty) {
+        await _obtenerCapituloFirebase(_bookController.text.trim());
+      } else {
+        setState(() => _isLoadingChapter = false);
+      }
+
+      if (_generatedQuiz == null || _generatedQuiz!.isEmpty) {
+        _generarQuizSilencioso();
+      } else {
+        setState(() => _isLoadingQuiz = false);
+      }
+
     } catch (e) {
-      debugPrint("Error interno al recuperar fecha: $e");
+      debugPrint("Error cargando lectura dinámica: $e");
+      if (mounted) {
+        setState(() {
+          _isLoadingChapter = false;
+          _isLoadingQuiz = false;
+        });
+      }
     }
   }
 
@@ -262,24 +308,57 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  Future<void> _generarQuizSilencioso() async {
+ Future<void> _generarQuizSilencioso() async {
     final rawBookAndChapter = _bookController.text.trim();
     final chapterText = _contentController.text.trim();
+    final formattedDate = _selectedDate.toIso8601String().split('T')[0];
 
-    if (rawBookAndChapter.isEmpty || chapterText.isEmpty) return;
+    if (rawBookAndChapter.isEmpty || chapterText.isEmpty) {
+      if (mounted) setState(() => _isLoadingQuiz = false);
+      return;
+    }
 
     setState(() => _isLoadingQuiz = true);
 
-    final resultado = await AIService.generarCuestionario(chapterText, rawBookAndChapter);
+    try {
+      final resultado = await AIService.generarCuestionario(chapterText, rawBookAndChapter);
+      final preguntas = resultado['preguntas'] as List? ?? [];
 
-    if (mounted) {
-      setState(() {
-        _isLoadingQuiz = false;
-        final preguntas = resultado['preguntas'] as List? ?? [];
-        if (preguntas.isNotEmpty) {
+      if (!mounted) return;
+
+      if (preguntas.isNotEmpty) {
+        setState(() {
           _generatedQuiz = preguntas;
+          _isLoadingQuiz = false;
+        });
+
+        await supabase.from('readings').upsert({
+          'date': formattedDate,
+          'book_and_chapter': rawBookAndChapter,
+          'chapter_content': chapterText,
+          'quiz': preguntas,
+          if (_verseController.text.trim().isNotEmpty) 'daily_verse': _verseController.text.trim(),
+          if (_verseRefController.text.trim().isNotEmpty) 'daily_verse_ref': _verseRefController.text.trim(),
+          if (_eventController.text.trim().isNotEmpty) 'special_event': _eventController.text.trim(),
+        }, onConflict: 'date');
+
+        if (mounted) {
+          messengerKey.currentState?.clearSnackBars();
+          messengerKey.currentState?.showSnackBar(
+            const SnackBar(
+              content: Text('⚡ Quiz generado con IA y guardado automáticamente en la BD.'),
+              backgroundColor: Color(0xFF6C5CE7),
+              behavior: SnackBarBehavior.floating,
+              duration: Duration(seconds: 2),
+            ),
+          );
         }
-      });
+      } else {
+        setState(() => _isLoadingQuiz = false);
+      }
+    } catch (e) {
+      debugPrint("Error al autoguardar quiz en Supabase: $e");
+      if (mounted) setState(() => _isLoadingQuiz = false);
     }
   }
 
