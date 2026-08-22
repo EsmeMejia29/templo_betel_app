@@ -202,44 +202,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _cargarLecturaPorFecha(DateTime fecha) async {
     final String formattedDate = fecha.toIso8601String().split('T')[0];
-    
+
     setState(() {
       _isLoadingChapter = true;
       _isLoadingQuiz = true;
-      // 1. Limpiamos inmediatamente para no mezclar capítulos de otras fechas
-      _bookController.text = '';
-      _contentController.text = '';
-      _verseController.text = '';
-      _verseRefController.text = '';
-      _eventController.text = '';
+      _bookController.clear();
+      _contentController.clear();
+      _verseController.clear();
+      _verseRefController.clear();
+      _eventController.clear();
       _generatedQuiz = null;
     });
 
     try {
-      String? libroYCapitulo;
+      String? libroYCapituloFirebase;
 
-      // 2. CONSULTA DINÁMICA A FIREBASE SEGÚN LA FECHA ELEGIDA
+      // 1. OBTENER EL LIBRO Y CAPÍTULO DEL DÍA DESDE FIREBASE SEGÚN LA FECHA
       final planMes = await _devotionalService.leerPlanMes(fecha.year, fecha.month);
-      
       if (planMes != null) {
         final diaStr = fecha.day.toString();
         final diaPadded = fecha.day.toString().padLeft(2, '0');
 
-        // Busca el día dinámicamente en cualquier estructura que tenga el documento
-        final lecturaDia = planMes[diaStr] ?? 
-                           planMes[diaPadded] ?? 
-                           (planMes['dias'] is Map ? (planMes['dias'][diaStr] ?? planMes['dias'][diaPadded]) : null) ??
-                           (planMes['days'] is Map ? (planMes['days'][diaStr] ?? planMes['days'][diaPadded]) : null);
+        final dynamic lecturaDia = planMes[diaStr] ??
+            planMes[diaPadded] ??
+            (planMes['dias'] is Map ? (planMes['dias'][diaStr] ?? planMes['dias'][diaPadded]) : null) ??
+            (planMes['days'] is Map ? (planMes['days'][diaStr] ?? planMes['days'][diaPadded]) : null);
 
         if (lecturaDia != null) {
           if (lecturaDia is String) {
-            libroYCapitulo = lecturaDia;
+            libroYCapituloFirebase = lecturaDia;
           } else if (lecturaDia is Map) {
-            libroYCapitulo = lecturaDia['lectura'] ?? lecturaDia['book_and_chapter'] ?? lecturaDia['capitulo'];
+            libroYCapituloFirebase = lecturaDia['lectura'] ?? lecturaDia['book_and_chapter'] ?? lecturaDia['capitulo'];
           }
         }
       }
 
+      // 2. VERIFICAR SI YA EXISTEN DATOS EN SUPABASE PARA ESTA FECHA
       final responseSupabase = await supabase
           .from('readings')
           .select()
@@ -250,32 +248,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       if (responseSupabase != null) {
         _isUpdating = true;
-        _bookController.text = libroYCapitulo ?? responseSupabase['book_and_chapter'] ?? '';
+        _bookController.text = libroYCapituloFirebase ?? responseSupabase['book_and_chapter'] ?? '';
         _verseController.text = responseSupabase['daily_verse'] ?? '';
         _verseRefController.text = responseSupabase['daily_verse_ref'] ?? '';
         _eventController.text = responseSupabase['special_event'] ?? '';
         _generatedQuiz = responseSupabase['quiz'] as List<dynamic>?;
       } else {
         _isUpdating = false;
-        if (libroYCapitulo != null) {
-          _bookController.text = libroYCapitulo;
+        if (libroYCapituloFirebase != null) {
+          _bookController.text = libroYCapituloFirebase;
         }
       }
 
+      // 3. DESCARGAR EL TEXTO DEL CAPÍTULO DESDE FIREBASE
+      String textoFirebase = '';
       if (_bookController.text.trim().isNotEmpty) {
-        await _obtenerCapituloFirebase(_bookController.text.trim());
+        textoFirebase = await _obtenerCapituloFirebase(_bookController.text.trim());
       } else {
         setState(() => _isLoadingChapter = false);
       }
 
+      // 4. GENERAR EL QUIZ Y GUARDARLO DIRECTAMENTE EN SUPABASE SI AÚN NO EXISTE
       if (_generatedQuiz == null || _generatedQuiz!.isEmpty) {
-        _generarQuizSilencioso();
+        if (textoFirebase.isNotEmpty && _bookController.text.trim().isNotEmpty) {
+          await _generarYAutoguardarQuiz(textoFirebase, _bookController.text.trim(), formattedDate);
+        } else {
+          setState(() => _isLoadingQuiz = false);
+        }
       } else {
         setState(() => _isLoadingQuiz = false);
       }
 
     } catch (e) {
-      debugPrint("Error cargando lectura dinámica: $e");
+      debugPrint("Error al sincronizar fecha: $e");
       if (mounted) {
         setState(() {
           _isLoadingChapter = false;
@@ -285,8 +290,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  Future<void> _obtenerCapituloFirebase(String rawBookAndChapter) async {
+  Future<String> _obtenerCapituloFirebase(String rawBookAndChapter) async {
     setState(() => _isLoadingChapter = true);
+    String textoEncontrado = '';
+
     try {
       final match = RegExp(r'^(.*?)\s*(\d+)(?::.*)?$').firstMatch(rawBookAndChapter.trim());
       if (match != null) {
@@ -297,6 +304,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         if (mounted && doc != null) {
           String? texto = doc['content'] ?? doc['texto'] ?? doc['chapter_content'] ?? doc['text'];
           if (texto != null && texto.isNotEmpty) {
+            textoEncontrado = texto;
             _contentController.text = texto;
           }
         }
@@ -306,22 +314,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     } finally {
       if (mounted) setState(() => _isLoadingChapter = false);
     }
+    return textoEncontrado;
   }
 
- Future<void> _generarQuizSilencioso() async {
-    final rawBookAndChapter = _bookController.text.trim();
-    final chapterText = _contentController.text.trim();
-    final formattedDate = _selectedDate.toIso8601String().split('T')[0];
-
-    if (rawBookAndChapter.isEmpty || chapterText.isEmpty) {
-      if (mounted) setState(() => _isLoadingQuiz = false);
-      return;
-    }
-
+  Future<void> _generarYAutoguardarQuiz(String chapterText, String bookAndChapter, String formattedDate) async {
     setState(() => _isLoadingQuiz = true);
 
     try {
-      final resultado = await AIService.generarCuestionario(chapterText, rawBookAndChapter);
+      final resultado = await AIService.generarCuestionario(chapterText, bookAndChapter);
       final preguntas = resultado['preguntas'] as List? ?? [];
 
       if (!mounted) return;
@@ -332,9 +332,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _isLoadingQuiz = false;
         });
 
+        // Guardado automático inmediato en la tabla 'readings' de Supabase
         await supabase.from('readings').upsert({
           'date': formattedDate,
-          'book_and_chapter': rawBookAndChapter,
+          'book_and_chapter': bookAndChapter,
           'chapter_content': chapterText,
           'quiz': preguntas,
           if (_verseController.text.trim().isNotEmpty) 'daily_verse': _verseController.text.trim(),
@@ -346,7 +347,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           messengerKey.currentState?.clearSnackBars();
           messengerKey.currentState?.showSnackBar(
             const SnackBar(
-              content: Text('⚡ Quiz generado con IA y guardado automáticamente en la BD.'),
+              content: Text('⚡ Cuestionario generado y guardado automáticamente en Supabase.'),
               backgroundColor: Color(0xFF6C5CE7),
               behavior: SnackBarBehavior.floating,
               duration: Duration(seconds: 2),
@@ -357,7 +358,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         setState(() => _isLoadingQuiz = false);
       }
     } catch (e) {
-      debugPrint("Error al autoguardar quiz en Supabase: $e");
+      debugPrint("Error generando/guardando quiz automático: $e");
       if (mounted) setState(() => _isLoadingQuiz = false);
     }
   }
@@ -369,7 +370,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _contentController.clear();
     _eventController.clear();
     _generatedQuiz = null;
-    
+
     if (mounted) {
       setState(() {
         _isUpdating = false;
@@ -403,7 +404,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     setState(() {
       _isLoadingAI = false;
-      
+
       if (resultado['error'] != null && resultado['error']!.isNotEmpty) {
         messengerKey.currentState?.clearSnackBars();
         messengerKey.currentState?.showSnackBar(
@@ -419,7 +420,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (resultado['versiculo']!.isNotEmpty && resultado['referencia']!.isNotEmpty) {
         _verseController.text = resultado['versiculo']!;
         _verseRefController.text = resultado['referencia']!;
-        
+
         messengerKey.currentState?.clearSnackBars();
         messengerKey.currentState?.showSnackBar(
           const SnackBar(
@@ -446,7 +447,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Future<void> _saveReading() async {
     if (_formKey.currentState == null || !_formKey.currentState!.validate()) return;
-    
+
     final bool fueActualizacion = _isUpdating;
     final String formattedDate = _selectedDate.toIso8601String().split('T')[0];
 
@@ -466,12 +467,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       messengerKey.currentState?.clearSnackBars();
       messengerKey.currentState?.showSnackBar(
         SnackBar(
-          content: Text(fueActualizacion 
-              ? "🎉 ¡Lectura y juego actualizados con éxito en la BD!" 
-              : "🎉 ¡Lectura y juego publicados con éxito en la BD!"),
+          content: Text(fueActualizacion
+              ? "🎉 ¡Lectura y juego actualizados con éxito en Supabase!"
+              : "🎉 ¡Lectura y juego publicados con éxito en Supabase!"),
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 3),
-        )
+        ),
       );
 
       _limpiarFormulario(mantenerFecha: false);
@@ -483,15 +484,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       messengerKey.currentState?.clearSnackBars();
       messengerKey.currentState?.showSnackBar(
         SnackBar(
-          content: Text("Error al guardar: $e"), 
+          content: Text("Error al guardar: $e"),
           backgroundColor: Colors.red,
           behavior: SnackBarBehavior.floating,
-        )
+        ),
       );
     } finally {
-      if (mounted) {
-        setState(() => _isSaving = false);
-      }
+      if (mounted) setState(() => _isSaving = false);
     }
   }
 
@@ -515,14 +514,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 16),
               Card(
                 elevation: 0,
-                color: _isUpdating 
+                color: _isUpdating
                     ? Colors.amber.withOpacity(0.1)
                     : theme.primaryColor.withOpacity(0.05),
                 child: ListTile(
                   leading: Icon(_isUpdating ? Icons.edit_calendar : Icons.calendar_month),
                   title: Text("Fecha: ${_selectedDate.day}/${_selectedDate.month}/${_selectedDate.year}"),
-                  subtitle: _isUpdating 
-                      ? const Text("Esta fecha ya tiene registros. Se actualizarán.", style: TextStyle(color: Colors.amber, fontSize: 12)) 
+                  subtitle: _isUpdating
+                      ? const Text("Esta fecha ya tiene registros. Se actualizarán.",
+                          style: TextStyle(color: Colors.amber, fontSize: 12))
                       : null,
                   trailing: const Icon(Icons.edit),
                   onTap: () async {
@@ -550,18 +550,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     tooltip: 'Sincronizar capítulo desde Firebase',
                     onPressed: () async {
                       if (_bookController.text.trim().isNotEmpty) {
-                        await _obtenerCapituloFirebase(_bookController.text.trim());
-                        _generarQuizSilencioso();
+                        final txt = await _obtenerCapituloFirebase(_bookController.text.trim());
+                        if (txt.isNotEmpty) {
+                          final formattedDate = _selectedDate.toIso8601String().split('T')[0];
+                          _generarYAutoguardarQuiz(txt, _bookController.text.trim(), formattedDate);
+                        }
                       }
                     },
                   ),
                 ),
-                onFieldSubmitted: (val) async {
-                  if (val.trim().isNotEmpty) {
-                    await _obtenerCapituloFirebase(val.trim());
-                    _generarQuizSilencioso();
-                  }
-                },
                 validator: (v) => v == null || v.isEmpty ? 'Campo requerido' : null,
               ),
               const SizedBox(height: 16),
@@ -578,7 +575,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   maxLines: 5,
                   decoration: const InputDecoration(
                     labelText: 'Contenido del Capítulo (desde Firebase)',
-                    hintText: 'Se cargará automáticamente al ingresar el libro y capítulo',
+                    hintText: 'Se cargará automáticamente al elegir la fecha',
                     border: OutlineInputBorder(),
                   ),
                   validator: (v) => v == null || v.isEmpty ? 'Campo requerido' : null,
@@ -636,9 +633,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   border: OutlineInputBorder(),
                 ),
               ),
-              const SizedBox(height: 30),
-              const Divider(),
-              const SizedBox(height: 16),
+              const SizedBox(height: 24),
               Card(
                 elevation: 0,
                 color: const Color(0xFF6C5CE7).withOpacity(0.08),
@@ -647,7 +642,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   padding: const EdgeInsets.all(16.0),
                   child: Row(
                     children: [
-                      Icon(Icons.sports_esports_rounded, color: const Color(0xFF6C5CE7), size: 28),
+                      const Icon(Icons.sports_esports_rounded, color: Color(0xFF6C5CE7), size: 28),
                       const SizedBox(width: 12),
                       Expanded(
                         child: Column(
@@ -663,11 +658,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                                 children: [
                                   SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
                                   SizedBox(width: 8),
-                                  Text('Generando cuestionario con IA...', style: TextStyle(fontSize: 12, color: Colors.deepPurple)),
+                                  Text('Generando y guardando quiz con IA...',
+                                      style: TextStyle(fontSize: 12, color: Colors.deepPurple)),
                                 ],
                               )
                             else if (_generatedQuiz != null && _generatedQuiz!.isNotEmpty)
-                              Text('${_generatedQuiz!.length} preguntas generadas automáticamente ✅',
+                              Text('${_generatedQuiz!.length} preguntas listas y sincronizadas ✅',
                                   style: TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.bold, fontSize: 12))
                             else
                               const Text('El quiz se generará al cargar el capítulo',
@@ -698,8 +694,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       onPressed: _saveReading,
                       icon: Icon(_isUpdating ? Icons.sync_rounded : Icons.rocket_launch_rounded),
                       label: Text(
-                        _isUpdating ? 'ACTUALIZAR LECTURA Y JUEGO EN BD' : 'PUBLICAR LECTURA Y JUEGO EN BD 🚀', 
-                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)
+                        _isUpdating ? 'ACTUALIZAR LECTURA EN BD' : 'PUBLICAR LECTURA EN BD 🚀',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                       ),
                     ),
               const SizedBox(height: 30),
@@ -710,6 +706,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 }
+
 
 class _QuizViewerModal extends StatefulWidget {
   final List preguntas;
