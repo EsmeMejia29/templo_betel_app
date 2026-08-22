@@ -8,9 +8,19 @@ class AIService {
   static const String _apiKey = String.fromEnvironment('GEMINI_API_KEY');
   static const String _model = 'gemini-2.5-flash';
 
+  static String _limpiarJson(String rawText) {
+    String clean = rawText.replaceAll(RegExp(r'```json\s*'), '').replaceAll(RegExp(r'```\s*'), '').trim();
+    final int startIndex = clean.indexOf('{');
+    final int endIndex = clean.lastIndexOf('}');
+    if (startIndex != -1 && endIndex != -1 && endIndex >= startIndex) {
+      clean = clean.substring(startIndex, endIndex + 1);
+    }
+    return clean;
+  }
+
   static Future<Map<String, String>> extraerVersiculoClave(String chapterContent) async {
     if (_apiKey.isEmpty) {
-      return {'versiculo': '', 'referencia': '', 'error': 'API Key no detectada.'};
+      return {'versiculo': '', 'referencia': '', 'error': 'API Key no configurada.'};
     }
 
     try {
@@ -49,41 +59,34 @@ $chapterContent
 
       if (response.statusCode == 200) {
         final jsonResponse = jsonDecode(response.body);
-        String rawText = jsonResponse['candidates'][0]['content']['parts'][0]['text'];
-
-        final int startIndex = rawText.indexOf('{');
-        final int endIndex = rawText.lastIndexOf('}');
-
-        if (startIndex != -1 && endIndex != -1 && endIndex > startIndex) {
-          rawText = rawText.substring(startIndex, endIndex + 1);
-        }
-
-        final Map<String, dynamic> data = jsonDecode(rawText);
+        final String rawText = jsonResponse['candidates'][0]['content']['parts'][0]['text'] ?? '';
+        final String cleanJson = _limpiarJson(rawText);
+        final Map<String, dynamic> data = jsonDecode(cleanJson);
 
         return {
-          'versiculo': data['versiculo'] ?? '',
-          'referencia': data['referencia'] ?? '',
+          'versiculo': data['versiculo']?.toString() ?? '',
+          'referencia': data['referencia']?.toString() ?? '',
           'error': '', 
         };
       } else {
         return {
           'versiculo': '',
           'referencia': '',
-          'error': 'Código ${response.statusCode}: ${response.body}'
+          'error': 'Error Gemini (${response.statusCode}): ${response.body}'
         };
       }
     } catch (e) {
       return {
         'versiculo': '',
         'referencia': '',
-        'error': 'Error local: $e'
+        'error': '$e'
       };
     }
   }
 
   static Future<Map<String, dynamic>> generarCuestionario(String chapterContent, String bookAndChapter) async {
     if (_apiKey.isEmpty) {
-      return {'preguntas': [], 'error': 'API Key no detectada.'};
+      return {'preguntas': [], 'error': 'API Key no configurada en GEMINI_API_KEY.'};
     }
 
     try {
@@ -98,7 +101,7 @@ Reglas estrictas:
 1. Cada pregunta debe tener exactamente 4 opciones de respuesta.
 2. Indica en 'respuesta_correcta' el índice numérico (0, 1, 2 o 3) de la opción que es correcta.
 3. Añade una 'explicacion' breve explicando por qué esa es la respuesta según el texto bíblico.
-4. Devuelve única y estrictamente un objeto JSON con este formato (sin markdown adicional):
+4. Devuelve única y estrictamente un objeto JSON con este formato sin explicaciones ni markdown:
 {
   "preguntas": [
     {
@@ -130,16 +133,10 @@ $chapterContent
 
       if (response.statusCode == 200) {
         final jsonResponse = jsonDecode(response.body);
-        String rawText = jsonResponse['candidates'][0]['content']['parts'][0]['text'];
+        final String rawText = jsonResponse['candidates'][0]['content']['parts'][0]['text'] ?? '';
+        final String cleanJson = _limpiarJson(rawText);
+        final Map<String, dynamic> data = jsonDecode(cleanJson);
 
-        final int startIndex = rawText.indexOf('{');
-        final int endIndex = rawText.lastIndexOf('}');
-
-        if (startIndex != -1 && endIndex != -1 && endIndex > startIndex) {
-          rawText = rawText.substring(startIndex, endIndex + 1);
-        }
-
-        final Map<String, dynamic> data = jsonDecode(rawText);
         return {
           'preguntas': data['preguntas'] ?? [],
           'error': '',
@@ -147,13 +144,13 @@ $chapterContent
       } else {
         return {
           'preguntas': [],
-          'error': 'Código ${response.statusCode}: ${response.body}'
+          'error': 'Error Gemini (${response.statusCode}): ${response.body}'
         };
       }
     } catch (e) {
       return {
         'preguntas': [],
-        'error': 'Error al generar juego: $e'
+        'error': '$e'
       };
     }
   }
@@ -250,6 +247,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _verseController.text = responseSupabase['daily_verse'] ?? '';
         _verseRefController.text = responseSupabase['daily_verse_ref'] ?? '';
         _eventController.text = responseSupabase['special_event'] ?? '';
+        _contentController.text = responseSupabase['chapter_content'] ?? '';
         _generatedQuiz = responseSupabase['quiz'] as List<dynamic>?;
       } else {
         _isUpdating = false;
@@ -265,13 +263,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
         setState(() => _isLoadingChapter = false);
       }
 
-      if (_verseController.text.trim().isEmpty && textoFirebase.isNotEmpty && _bookController.text.trim().isNotEmpty) {
-        await _autocompletarVersiculoSilencioso(textoFirebase, _bookController.text.trim(), formattedDate);
+      final String textoFinal = textoFirebase.isNotEmpty ? textoFirebase : _contentController.text.trim();
+      final String libroFinal = _bookController.text.trim();
+
+      if (_verseController.text.trim().isEmpty && textoFinal.isNotEmpty && libroFinal.isNotEmpty) {
+        await _autocompletarVersiculoSilencioso(textoFinal, libroFinal, formattedDate);
       }
 
       if (_generatedQuiz == null || _generatedQuiz!.isEmpty) {
-        if (textoFirebase.isNotEmpty && _bookController.text.trim().isNotEmpty) {
-          await _generarYAutoguardarQuiz(textoFirebase, _bookController.text.trim(), formattedDate);
+        if (textoFinal.isNotEmpty && libroFinal.isNotEmpty) {
+          await _generarYAutoguardarQuiz(textoFinal, libroFinal, formattedDate);
         } else {
           setState(() => _isLoadingQuiz = false);
         }
@@ -302,7 +303,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
         final doc = await _devotionalService.leerCapitulo(libro, capitulo);
         if (mounted && doc != null) {
-          String? texto = doc['content'] ?? doc['texto'] ?? doc['chapter_content'] ?? doc['text'];
+          String? texto;
+          if (doc.containsKey('content')) texto = doc['content']?.toString();
+          else if (doc.containsKey('texto')) texto = doc['texto']?.toString();
+          else if (doc.containsKey('chapter_content')) texto = doc['chapter_content']?.toString();
+          else if (doc.containsKey('text')) texto = doc['text']?.toString();
+          else if (doc.containsKey('versiculos') || doc.containsKey('verses')) {
+            final lista = (doc['versiculos'] ?? doc['verses']) as List?;
+            texto = lista?.join('\n');
+          }
+
           if (texto != null && texto.isNotEmpty) {
             textoEncontrado = texto;
             _contentController.text = texto;
@@ -361,6 +371,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       final resultado = await AIService.generarCuestionario(chapterText, bookAndChapter);
       final preguntas = resultado['preguntas'] as List? ?? [];
+      final String errorMsg = resultado['error']?.toString() ?? '';
 
       if (!mounted) return;
 
@@ -393,28 +404,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       } else {
         setState(() => _isLoadingQuiz = false);
+        if (errorMsg.isNotEmpty) {
+          messengerKey.currentState?.clearSnackBars();
+          messengerKey.currentState?.showSnackBar(
+            SnackBar(
+              content: Text('Aviso Quiz: $errorMsg'),
+              backgroundColor: Colors.orangeAccent,
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        }
       }
     } catch (e) {
       debugPrint("Error generando quiz automático: $e");
       if (mounted) setState(() => _isLoadingQuiz = false);
-    }
-  }
-
-  void _limpiarFormulario({required bool mantenerFecha}) {
-    _bookController.clear();
-    _verseController.clear();
-    _verseRefController.clear();
-    _contentController.clear();
-    _eventController.clear();
-    _generatedQuiz = null;
-
-    if (mounted) {
-      setState(() {
-        _isUpdating = false;
-        if (!mantenerFecha) {
-          _selectedDate = DateTime.now();
-        }
-      });
     }
   }
 
@@ -587,12 +591,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     onPressed: () async {
                       if (_bookController.text.trim().isNotEmpty) {
                         final txt = await _obtenerCapituloFirebase(_bookController.text.trim());
-                        if (txt.isNotEmpty) {
-                          final formattedDate = _selectedDate.toIso8601String().split('T')[0];
+                        final formattedDate = _selectedDate.toIso8601String().split('T')[0];
+                        final String finalTxt = txt.isNotEmpty ? txt : _contentController.text.trim();
+                        if (finalTxt.isNotEmpty) {
                           if (_verseController.text.trim().isEmpty) {
-                            await _autocompletarVersiculoSilencioso(txt, _bookController.text.trim(), formattedDate);
+                            await _autocompletarVersiculoSilencioso(finalTxt, _bookController.text.trim(), formattedDate);
                           }
-                          await _generarYAutoguardarQuiz(txt, _bookController.text.trim(), formattedDate);
+                          await _generarYAutoguardarQuiz(finalTxt, _bookController.text.trim(), formattedDate);
                         }
                       }
                     },
@@ -716,6 +721,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           tooltip: 'Previsualizar Cuestionario',
                           onPressed: () => _mostrarModalJuego(_generatedQuiz!, _bookController.text.trim()),
                         ),
+                      IconButton(
+                        icon: const Icon(Icons.refresh_rounded, color: Color(0xFF6C5CE7)),
+                        tooltip: 'Forzar generación de Quiz',
+                        onPressed: _isLoadingQuiz
+                            ? null
+                            : () {
+                                final txt = _contentController.text.trim();
+                                final book = _bookController.text.trim();
+                                final formattedDate = _selectedDate.toIso8601String().split('T')[0];
+                                if (txt.isNotEmpty && book.isNotEmpty) {
+                                  _generarYAutoguardarQuiz(txt, book, formattedDate);
+                                }
+                              },
+                      ),
                     ],
                   ),
                 ),
