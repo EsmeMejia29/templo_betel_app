@@ -6,7 +6,7 @@ import '../services/devotional_service.dart';
 
 class AIService {
   static const String _apiKey = String.fromEnvironment('GEMINI_API_KEY');
-  static const String _model = 'gemini-2.5-flash';
+  static const String _model = 'gemini-3.6-flash';
 
   static String _limpiarJson(String rawText) {
     String clean = rawText.replaceAll(RegExp(r'```json\s*'), '').replaceAll(RegExp(r'```\s*'), '').trim();
