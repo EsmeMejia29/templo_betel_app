@@ -6,7 +6,7 @@ import '../services/devotional_service.dart';
 
 class AIService {
   static const String _apiKey = String.fromEnvironment('GEMINI_API_KEY');
-  static const String _model = 'gemini-3.6-flash';
+  static const String _model = 'gemini-2.5-flash';
 
   static Future<Map<String, String>> extraerVersiculoClave(String chapterContent) async {
     if (_apiKey.isEmpty) {
@@ -180,6 +180,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _isSaving = false;
   bool _isLoadingAI = false;
   bool _isLoadingQuiz = false;
+  bool _isLoadingChapter = false;
   bool _isUpdating = false;
   List<dynamic>? _generatedQuiz;
 
@@ -216,16 +217,69 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _bookController.text = response['book_and_chapter'] ?? '';
           _verseController.text = response['daily_verse'] ?? '';
           _verseRefController.text = response['daily_verse_ref'] ?? '';
-          _contentController.text = response['chapter_content'] ?? '';
           _eventController.text = response['special_event'] ?? '';
           _generatedQuiz = response['quiz'] as List<dynamic>?;
           _isUpdating = true;
         });
+
+        // Carga el texto desde Firebase a partir del título
+        if (_bookController.text.isNotEmpty) {
+          await _obtenerCapituloFirebase(_bookController.text);
+        }
+
+        // Si la lectura en Supabase aún no tenía Quiz, se genera automáticamente
+        if (_generatedQuiz == null || _generatedQuiz!.isEmpty) {
+          _generarQuizSilencioso();
+        }
       } else {
         _limpiarFormulario(mantenerFecha: true);
       }
     } catch (e) {
       debugPrint("Error interno al recuperar fecha: $e");
+    }
+  }
+
+  Future<void> _obtenerCapituloFirebase(String rawBookAndChapter) async {
+    setState(() => _isLoadingChapter = true);
+    try {
+      final match = RegExp(r'^(.*?)\s*(\d+)(?::.*)?$').firstMatch(rawBookAndChapter.trim());
+      if (match != null) {
+        final libro = match.group(1)?.trim() ?? '';
+        final capitulo = int.tryParse(match.group(2) ?? '1') ?? 1;
+
+        final doc = await _devotionalService.leerCapitulo(libro, capitulo);
+        if (mounted && doc != null) {
+          String? texto = doc['content'] ?? doc['texto'] ?? doc['chapter_content'] ?? doc['text'];
+          if (texto != null && texto.isNotEmpty) {
+            _contentController.text = texto;
+          }
+        }
+      }
+    } catch (e) {
+      debugPrint("Error obteniendo capítulo de Firebase: $e");
+    } finally {
+      if (mounted) setState(() => _isLoadingChapter = false);
+    }
+  }
+
+  Future<void> _generarQuizSilencioso() async {
+    final rawBookAndChapter = _bookController.text.trim();
+    final chapterText = _contentController.text.trim();
+
+    if (rawBookAndChapter.isEmpty || chapterText.isEmpty) return;
+
+    setState(() => _isLoadingQuiz = true);
+
+    final resultado = await AIService.generarCuestionario(chapterText, rawBookAndChapter);
+
+    if (mounted) {
+      setState(() {
+        _isLoadingQuiz = false;
+        final preguntas = resultado['preguntas'] as List? ?? [];
+        if (preguntas.isNotEmpty) {
+          _generatedQuiz = preguntas;
+        }
+      });
     }
   }
 
@@ -254,7 +308,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       messengerKey.currentState?.clearSnackBars();
       messengerKey.currentState?.showSnackBar(
         const SnackBar(
-          content: Text('Por favor, ingresa primero el contenido del capítulo.'),
+          content: Text('No hay contenido disponible del capítulo para analizar.'),
           backgroundColor: Colors.orangeAccent,
           behavior: SnackBarBehavior.floating,
         ),
@@ -262,9 +316,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
-    setState(() {
-      _isLoadingAI = true;
-    });
+    setState(() => _isLoadingAI = true);
 
     final resultado = await AIService.extraerVersiculoClave(text);
 
@@ -298,94 +350,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         );
       }
     });
-  }
-
-  Future<void> _generarYGuardarJuego() async {
-    final rawBookAndChapter = _bookController.text.trim();
-
-    if (rawBookAndChapter.isEmpty && _contentController.text.trim().isEmpty) {
-      messengerKey.currentState?.clearSnackBars();
-      messengerKey.currentState?.showSnackBar(
-        const SnackBar(
-          content: Text('Ingresa el Libro y Capítulo (ej: 1 Reyes 18) o el contenido del capítulo.'),
-          backgroundColor: Colors.orangeAccent,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-
-    setState(() => _isLoadingQuiz = true);
-
-    String textoCapitulo = '';
-    String tituloLectura = rawBookAndChapter.isEmpty ? 'Capítulo' : rawBookAndChapter;
-
-    try {
-      final partes = rawBookAndChapter.split(RegExp(r'\s+'));
-      if (partes.length >= 2) {
-        final numeroCap = int.tryParse(partes.last);
-        final nombreLibro = partes.sublist(0, partes.length - 1).join(' ');
-
-        if (numeroCap != null && nombreLibro.isNotEmpty) {
-          final docFirebase = await _devotionalService.leerCapitulo(nombreLibro, numeroCap);
-          if (docFirebase != null && docFirebase['text'] != null && docFirebase['text'].toString().isNotEmpty) {
-            textoCapitulo = docFirebase['text'].toString();
-          }
-        }
-      }
-    } catch (e) {
-      debugPrint("No se pudo obtener de Firebase BD: $e");
-    }
-
-    if (textoCapitulo.isEmpty) {
-      textoCapitulo = _contentController.text.trim();
-    }
-
-    if (textoCapitulo.isEmpty) {
-      if (!mounted) return;
-      setState(() => _isLoadingQuiz = false);
-      messengerKey.currentState?.clearSnackBars();
-      messengerKey.currentState?.showSnackBar(
-        const SnackBar(
-          content: Text('No se encontró el capítulo en la BD ni en el campo de texto.'),
-          backgroundColor: Colors.redAccent,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-
-    final resultado = await AIService.generarCuestionario(textoCapitulo, tituloLectura);
-
-    if (!mounted) return;
-    setState(() => _isLoadingQuiz = false);
-
-    if (resultado['error'] != null && resultado['error'].toString().isNotEmpty) {
-      messengerKey.currentState?.clearSnackBars();
-      messengerKey.currentState?.showSnackBar(
-        SnackBar(
-          content: Text('Error: ${resultado['error']}'),
-          backgroundColor: Colors.redAccent,
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-
-    final List preguntas = resultado['preguntas'] as List? ?? [];
-    if (preguntas.isEmpty) {
-      messengerKey.currentState?.clearSnackBars();
-      messengerKey.currentState?.showSnackBar(
-        const SnackBar(content: Text('No se pudieron generar preguntas para este capítulo.')),
-      );
-      return;
-    }
-
-    setState(() {
-      _generatedQuiz = preguntas;
-    });
-
-    _mostrarModalJuego(preguntas, tituloLectura);
   }
 
   void _mostrarModalJuego(List preguntas, String libroCapitulo) {
@@ -432,7 +396,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       );
 
       _limpiarFormulario(mantenerFecha: false);
-      
       _cargarLecturaPorFecha(_selectedDate);
 
     } catch (e) {
@@ -500,23 +463,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 16),
               TextFormField(
                 controller: _bookController,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: 'Libro y Capítulo (Ej: 1 Reyes 18)',
-                  border: OutlineInputBorder(),
+                  border: const OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.cloud_sync_outlined),
+                    tooltip: 'Sincronizar capítulo desde Firebase',
+                    onPressed: () async {
+                      if (_bookController.text.trim().isNotEmpty) {
+                        await _obtenerCapituloFirebase(_bookController.text.trim());
+                        _generarQuizSilencioso();
+                      }
+                    },
+                  ),
                 ),
+                onFieldSubmitted: (val) async {
+                  if (val.trim().isNotEmpty) {
+                    await _obtenerCapituloFirebase(val.trim());
+                    _generarQuizSilencioso();
+                  }
+                },
                 validator: (v) => v == null || v.isEmpty ? 'Campo requerido' : null,
               ),
               const SizedBox(height: 16),
-              TextFormField(
-                controller: _contentController,
-                maxLines: 5,
-                decoration: const InputDecoration(
-                  labelText: 'Guía o Contenido del Capítulo',
-                  hintText: 'Pega el texto aquí antes de presionar el botón de IA',
-                  border: OutlineInputBorder(),
+              if (_isLoadingChapter)
+                const Center(
+                  child: Padding(
+                    padding: EdgeInsets.all(12.0),
+                    child: CircularProgressIndicator(),
+                  ),
+                )
+              else
+                TextFormField(
+                  controller: _contentController,
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                    labelText: 'Contenido del Capítulo (desde Firebase)',
+                    hintText: 'Se cargará automáticamente al ingresar el libro y capítulo',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (v) => v == null || v.isEmpty ? 'Campo requerido' : null,
                 ),
-                validator: (v) => v == null || v.isEmpty ? 'Campo requerido' : null,
-              ),
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
@@ -573,47 +560,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 30),
               const Divider(),
               const SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Dinámicas & Recapitulación',
-                    style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-                  ),
-                  if (_generatedQuiz != null && _generatedQuiz!.isNotEmpty)
-                    Chip(
-                      backgroundColor: Colors.green.shade50,
-                      label: Text('${_generatedQuiz!.length} preguntas listas ✅', style: TextStyle(color: Colors.green.shade800, fontSize: 12)),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'Genera un cuestionario interactivo con IA a partir de la información del capítulo en la BD.',
-                style: TextStyle(fontSize: 13, color: Colors.grey[600]),
-              ),
-              const SizedBox(height: 14),
-              SizedBox(
-                width: double.infinity,
-                height: 50,
-                child: ElevatedButton.icon(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF6C5CE7),
-                    foregroundColor: Colors.white,
-                    elevation: 1,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  onPressed: _isLoadingQuiz ? null : _generarYGuardarJuego,
-                  icon: _isLoadingQuiz
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                        )
-                      : const Icon(Icons.sports_esports_rounded),
-                  label: Text(
-                    _isLoadingQuiz ? 'Consultando BD y creando juego...' : 'Crear juego sobre el capítulo 🎮',
-                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              Card(
+                elevation: 0,
+                color: const Color(0xFF6C5CE7).withOpacity(0.08),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Row(
+                    children: [
+                      Icon(Icons.sports_esports_rounded, color: const Color(0xFF6C5CE7), size: 28),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Text(
+                              'Cuestionario Interactivo',
+                              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+                            ),
+                            const SizedBox(height: 4),
+                            if (_isLoadingQuiz)
+                              const Row(
+                                children: [
+                                  SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2)),
+                                  SizedBox(width: 8),
+                                  Text('Generando cuestionario con IA...', style: TextStyle(fontSize: 12, color: Colors.deepPurple)),
+                                ],
+                              )
+                            else if (_generatedQuiz != null && _generatedQuiz!.isNotEmpty)
+                              Text('${_generatedQuiz!.length} preguntas generadas automáticamente ✅',
+                                  style: TextStyle(color: Colors.green.shade800, fontWeight: FontWeight.bold, fontSize: 12))
+                            else
+                              const Text('El quiz se generará al cargar el capítulo',
+                                  style: TextStyle(fontSize: 12, color: Colors.grey)),
+                          ],
+                        ),
+                      ),
+                      if (_generatedQuiz != null && _generatedQuiz!.isNotEmpty)
+                        IconButton(
+                          icon: const Icon(Icons.visibility_rounded, color: Color(0xFF6C5CE7)),
+                          tooltip: 'Previsualizar Cuestionario',
+                          onPressed: () => _mostrarModalJuego(_generatedQuiz!, _bookController.text.trim()),
+                        ),
+                    ],
                   ),
                 ),
               ),
