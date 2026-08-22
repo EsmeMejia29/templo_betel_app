@@ -6,6 +6,8 @@ import 'package:flutter_tts/flutter_tts.dart';
 import '../models/reading_model.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../services/devotional_service.dart';
+
 import 'dart:js' as js;
 
 class _TextChunk {
@@ -42,6 +44,12 @@ class TodayTab extends StatefulWidget {
 }
 
 class _TodayTabState extends State<TodayTab> {
+
+  final DevotionalService _devotionalService = DevotionalService();
+  String? _firebaseChapterContent;
+  bool _isLoadingChapter = true;
+
+
   late FlutterTts _flutterTts;
   bool _isPlaying = false;
   bool _isPaused = false;
@@ -80,6 +88,18 @@ class _TodayTabState extends State<TodayTab> {
   void initState() {
     super.initState();
     _initTts();
+    _cargarCapituloFirebase();
+  }
+
+  @override
+  void didUpdateWidget(covariant TodayTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.todayReading.bookAndChapter != widget.todayReading.bookAndChapter) {
+      _stopAudio();
+      _cachedCleanText = "";
+      _firebaseChapterContent = null;
+      _cargarCapituloFirebase();
+    }
   }
 
   double get _currentRate => kIsWeb ? _webSpeedRates[_speedIndex] : _nativeSpeedRates[_speedIndex];
@@ -181,6 +201,66 @@ class _TodayTabState extends State<TodayTab> {
           '''
         ]);
       } catch (_) {}
+    }
+  }
+
+  Future<void> _cargarCapituloFirebase() async {
+    setState(() => _isLoadingChapter = true);
+
+    try {
+      final rawBookAndChapter = widget.todayReading.bookAndChapter.trim();
+      debugPrint("🔍 [Firebase] Intentando buscar para: '$rawBookAndChapter'");
+
+      // Extraer libro y capítulo tolerando referencias como "1 Juan 2", "Génesis 1" o "Mateo 5:1-10"
+      final match = RegExp(r'^(.*?)\s*(\d+)(?::.*)?$').firstMatch(rawBookAndChapter);
+      
+      if (match != null) {
+        final libro = match.group(1)?.trim() ?? '';
+        final capitulo = int.tryParse(match.group(2) ?? '1') ?? 1;
+
+        debugPrint("📖 [Firebase] Libro extraído: '$libro', Capítulo: $capitulo");
+
+        final doc = await _devotionalService.leerCapitulo(libro, capitulo);
+        
+        debugPrint("📦 [Firebase] Documento recibido de Firestore: $doc");
+
+        if (mounted && doc != null) {
+          // Extraer el texto buscando todas las variantes posibles
+          String? textoExtraido;
+
+          if (doc.containsKey('content')) textoExtraido = doc['content']?.toString();
+          else if (doc.containsKey('texto')) textoExtraido = doc['texto']?.toString();
+          else if (doc.containsKey('chapter_content')) textoExtraido = doc['chapter_content']?.toString();
+          else if (doc.containsKey('text')) textoExtraido = doc['text']?.toString();
+          else if (doc.containsKey('versiculos') || doc.containsKey('verses')) {
+            // Si viene en lista de versículos
+            final lista = (doc['versiculos'] ?? doc['verses']) as List?;
+            textoExtraido = lista?.join('\n');
+          }
+
+          if (textoExtraido != null && textoExtraido.isNotEmpty) {
+            setState(() {
+              _firebaseChapterContent = textoExtraido;
+              _isLoadingChapter = false;
+            });
+            debugPrint("✅ [Firebase] Capítulo cargado exitosamente.");
+            return;
+          } else {
+            debugPrint("⚠️ [Firebase] El documento existe pero no se encontró la clave de texto en: ${doc.keys}");
+          }
+        } else {
+          debugPrint("❌ [Firebase] No se encontró el documento en Firestore (null / 404).");
+        }
+      } else {
+        debugPrint("⚠️ [Firebase] No coincidió el RegExp con: '$rawBookAndChapter'");
+      }
+    } catch (e, stack) {
+      debugPrint("💥 [Firebase Error]: $e");
+      debugPrint("Stack: $stack");
+    }
+
+    if (mounted) {
+      setState(() => _isLoadingChapter = false);
     }
   }
 
@@ -497,8 +577,9 @@ class _TodayTabState extends State<TodayTab> {
   }
 
   void _resumeAudioFromIndex(int startIndex) {
-    if (_cachedCleanText.isEmpty && widget.todayReading.chapterContent != null) {
-      _cachedCleanText = widget.todayReading.chapterContent!;
+    final activeText = _firebaseChapterContent ?? widget.todayReading.chapterContent;
+    if (_cachedCleanText.isEmpty && activeText != null) {
+      _cachedCleanText = activeText;
       _wordMatches = RegExp(r'\S+').allMatches(_cachedCleanText).toList();
     }
 
@@ -543,8 +624,9 @@ class _TodayTabState extends State<TodayTab> {
 
   void _seekToWordIndex(int targetIndex) {
     if (_wordMatches.isEmpty) {
-      if (widget.todayReading.chapterContent == null) return;
-      _cachedCleanText = widget.todayReading.chapterContent!;
+      final activeText = _firebaseChapterContent ?? widget.todayReading.chapterContent;
+      if (activeText == null) return;
+      _cachedCleanText = activeText;
       _wordMatches = RegExp(r'\S+').allMatches(_cachedCleanText).toList();
     }
 
@@ -571,7 +653,9 @@ class _TodayTabState extends State<TodayTab> {
     final theme = Theme.of(context);
     final hasEvent = widget.todayReading.specialEvent != null && widget.todayReading.specialEvent!.isNotEmpty;
     final hasVerse = widget.todayReading.dailyVerse != null && widget.todayReading.dailyVerse!.isNotEmpty;
-    final hasContent = widget.todayReading.chapterContent != null && widget.todayReading.chapterContent!.isNotEmpty;
+
+    final currentContent = _firebaseChapterContent ?? widget.todayReading.chapterContent;
+    final hasContent = currentContent != null && currentContent.isNotEmpty;
     final hasQuiz = widget.todayReading.quiz != null && widget.todayReading.quiz!.isNotEmpty;
 
     final readingDate = widget.todayReading.date;
@@ -723,7 +807,16 @@ class _TodayTabState extends State<TodayTab> {
                 ),
                 const SizedBox(height: 20),
               ],
-              if (hasContent) ...[
+              if (_isLoadingChapter) ...[
+                const Center(
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(vertical: 24.0),
+                    child: CircularProgressIndicator(),
+                  ),
+                ),
+                const SizedBox(height: 20),
+              ]
+              else if (hasContent) ...[
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
@@ -762,7 +855,7 @@ class _TodayTabState extends State<TodayTab> {
                             size: 28,
                           ),
                           tooltip: _isPlaying ? "Pausar" : "Escuchar",
-                          onPressed: () => _speakOrToggle(widget.todayReading.chapterContent!),
+                          onPressed: () => _speakOrToggle(currentContent),
                         ),
                         const SizedBox(width: 4),
                         IconButton(
@@ -795,7 +888,7 @@ class _TodayTabState extends State<TodayTab> {
                         const SizedBox(width: 12),
                         Expanded(
                           child: _buildHighlightedContent(
-                            content: widget.todayReading.chapterContent!,
+                            content: currentContent,
                             primaryColor: theme.primaryColor,
                           ),
                         ),
