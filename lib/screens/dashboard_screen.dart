@@ -10,7 +10,7 @@ class AIService {
 
   static Future<Map<String, String>> extraerVersiculoClave(String chapterContent) async {
     if (_apiKey.isEmpty) {
-      return {'versiculo': '', 'referencia': '', 'error': 'API Key no detectada en la configuración.'};
+      return {'versiculo': '', 'referencia': '', 'error': 'API Key no detectada.'};
     }
 
     try {
@@ -83,7 +83,7 @@ $chapterContent
 
   static Future<Map<String, dynamic>> generarCuestionario(String chapterContent, String bookAndChapter) async {
     if (_apiKey.isEmpty) {
-      return {'preguntas': [], 'error': 'API Key no detectada en la configuración.'};
+      return {'preguntas': [], 'error': 'API Key no detectada.'};
     }
 
     try {
@@ -217,7 +217,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     try {
       String? libroYCapituloFirebase;
 
-      // 1. OBTENER EL LIBRO Y CAPÍTULO DEL DÍA DESDE FIREBASE SEGÚN LA FECHA
       final planMes = await _devotionalService.leerPlanMes(fecha.year, fecha.month);
       if (planMes != null) {
         final diaStr = fecha.day.toString();
@@ -237,7 +236,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
 
-      // 2. VERIFICAR SI YA EXISTEN DATOS EN SUPABASE PARA ESTA FECHA
       final responseSupabase = await supabase
           .from('readings')
           .select()
@@ -260,7 +258,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         }
       }
 
-      // 3. DESCARGAR EL TEXTO DEL CAPÍTULO DESDE FIREBASE
       String textoFirebase = '';
       if (_bookController.text.trim().isNotEmpty) {
         textoFirebase = await _obtenerCapituloFirebase(_bookController.text.trim());
@@ -268,7 +265,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         setState(() => _isLoadingChapter = false);
       }
 
-      // 4. GENERAR EL QUIZ Y GUARDARLO DIRECTAMENTE EN SUPABASE SI AÚN NO EXISTE
+      if (_verseController.text.trim().isEmpty && textoFirebase.isNotEmpty && _bookController.text.trim().isNotEmpty) {
+        await _autocompletarVersiculoSilencioso(textoFirebase, _bookController.text.trim(), formattedDate);
+      }
+
       if (_generatedQuiz == null || _generatedQuiz!.isEmpty) {
         if (textoFirebase.isNotEmpty && _bookController.text.trim().isNotEmpty) {
           await _generarYAutoguardarQuiz(textoFirebase, _bookController.text.trim(), formattedDate);
@@ -317,6 +317,44 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return textoEncontrado;
   }
 
+  Future<void> _autocompletarVersiculoSilencioso(String chapterText, String bookAndChapter, String formattedDate) async {
+    if (chapterText.trim().isEmpty) return;
+
+    setState(() => _isLoadingAI = true);
+
+    try {
+      final resultado = await AIService.extraerVersiculoClave(chapterText);
+
+      if (!mounted) return;
+
+      final versiculo = resultado['versiculo'] ?? '';
+      final referencia = resultado['referencia'] ?? '';
+
+      if (versiculo.isNotEmpty && referencia.isNotEmpty) {
+        setState(() {
+          _verseController.text = versiculo;
+          _verseRefController.text = referencia;
+          _isLoadingAI = false;
+        });
+
+        await supabase.from('readings').upsert({
+          'date': formattedDate,
+          'book_and_chapter': bookAndChapter,
+          'chapter_content': chapterText,
+          'daily_verse': versiculo,
+          'daily_verse_ref': referencia,
+          'quiz': _generatedQuiz,
+          if (_eventController.text.trim().isNotEmpty) 'special_event': _eventController.text.trim(),
+        }, onConflict: 'date');
+      } else {
+        setState(() => _isLoadingAI = false);
+      }
+    } catch (e) {
+      debugPrint("Error autogenerando versículo: $e");
+      if (mounted) setState(() => _isLoadingAI = false);
+    }
+  }
+
   Future<void> _generarYAutoguardarQuiz(String chapterText, String bookAndChapter, String formattedDate) async {
     setState(() => _isLoadingQuiz = true);
 
@@ -332,7 +370,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
           _isLoadingQuiz = false;
         });
 
-        // Guardado automático inmediato en la tabla 'readings' de Supabase
         await supabase.from('readings').upsert({
           'date': formattedDate,
           'book_and_chapter': bookAndChapter,
@@ -347,7 +384,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
           messengerKey.currentState?.clearSnackBars();
           messengerKey.currentState?.showSnackBar(
             const SnackBar(
-              content: Text('⚡ Cuestionario generado y guardado automáticamente en Supabase.'),
+              content: Text('⚡ Cuestionario sincronizado con éxito.'),
               backgroundColor: Color(0xFF6C5CE7),
               behavior: SnackBarBehavior.floating,
               duration: Duration(seconds: 2),
@@ -358,7 +395,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         setState(() => _isLoadingQuiz = false);
       }
     } catch (e) {
-      debugPrint("Error generando/guardando quiz automático: $e");
+      debugPrint("Error generando quiz automático: $e");
       if (mounted) setState(() => _isLoadingQuiz = false);
     }
   }
@@ -468,15 +505,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
       messengerKey.currentState?.showSnackBar(
         SnackBar(
           content: Text(fueActualizacion
-              ? "🎉 ¡Lectura y juego actualizados con éxito en Supabase!"
-              : "🎉 ¡Lectura y juego publicados con éxito en Supabase!"),
+              ? "🎉 ¡Lectura actualizada con éxito en la BD!"
+              : "🎉 ¡Lectura publicada con éxito en la BD!"),
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 3),
         ),
       );
 
-      _limpiarFormulario(mantenerFecha: false);
-      _cargarLecturaPorFecha(_selectedDate);
+      await _cargarLecturaPorFecha(_selectedDate);
 
     } catch (e) {
       debugPrint("Error atrapado en base de datos: $e");
@@ -553,7 +589,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         final txt = await _obtenerCapituloFirebase(_bookController.text.trim());
                         if (txt.isNotEmpty) {
                           final formattedDate = _selectedDate.toIso8601String().split('T')[0];
-                          _generarYAutoguardarQuiz(txt, _bookController.text.trim(), formattedDate);
+                          if (_verseController.text.trim().isEmpty) {
+                            await _autocompletarVersiculoSilencioso(txt, _bookController.text.trim(), formattedDate);
+                          }
+                          await _generarYAutoguardarQuiz(txt, _bookController.text.trim(), formattedDate);
                         }
                       }
                     },
@@ -706,7 +745,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 }
-
 
 class _QuizViewerModal extends StatefulWidget {
   final List preguntas;
