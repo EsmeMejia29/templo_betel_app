@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/theme.dart';
 import 'screens/home_screen.dart';
@@ -28,6 +29,16 @@ class TemploBetelApp extends StatelessWidget {
       title: 'Templo Betel',
       debugShowCheckedModeBanner: false,
       theme: BetelTheme.lightTheme,
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [
+        Locale('es', 'ES'),
+        Locale('en', 'US'),
+      ],
+      locale: const Locale('es', 'ES'),
       home: const HomeScreen(),
     );
   }

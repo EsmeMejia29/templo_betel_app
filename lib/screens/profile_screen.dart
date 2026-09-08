@@ -6,6 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import '../../main.dart';
 import 'widgets/streak_badge.dart';
 import 'widgets/weekly_chart.dart';
+import 'recuperarcontra.dart';
 
 class ProfileScreen extends StatefulWidget {
   final int streakCount;
@@ -36,6 +37,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
   final _phoneController = TextEditingController();
   final _passwordController = TextEditingController();
   final _nameController = TextEditingController(); 
+  final _birthdateController = TextEditingController();
+  DateTime? _selectedBirthDate;
   
   bool _isLoginMode = true;
   bool _isLoading = false;
@@ -137,6 +140,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
     _phoneController.dispose();
     _passwordController.dispose();
     _nameController.dispose();
+    _birthdateController.dispose();
     super.dispose();
   }
 
@@ -187,6 +191,27 @@ class _ProfileScreenState extends State<ProfileScreen> {
     } catch (_) {}
   }
 
+  Future<void> _selectBirthDate(BuildContext context) async {
+    final DateTime initialDate = _selectedBirthDate ?? DateTime(2005, 1, 1);
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: initialDate,
+      firstDate: DateTime(1920),
+      lastDate: DateTime.now(),
+      locale: const Locale('es', 'ES'),
+      helpText: 'SELECCIONA TU FECHA DE NACIMIENTO',
+    );
+
+    if (picked != null) {
+      setState(() {
+        _selectedBirthDate = picked;
+        final day = picked.day.toString().padLeft(2, '0');
+        final month = picked.month.toString().padLeft(2, '0');
+        _birthdateController.text = "$day/$month/${picked.year}";
+      });
+    }
+  }
+
   Future<void> _handleAuth() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -231,10 +256,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
           _fetchRanking();
         }
       } else {
+        final formattedBirthDate = _selectedBirthDate != null 
+            ? "${_selectedBirthDate!.year}-${_selectedBirthDate!.month.toString().padLeft(2, '0')}-${_selectedBirthDate!.day.toString().padLeft(2, '0')}"
+            : null;
+
         final insertResponse = await supabase.from('profiles').insert({
           'phone': phone,
           'password': password,
           'full_name': _nameController.text.trim(),
+          'birthdate': formattedBirthDate,
         }).select().single();
 
         await _saveProfileLocally(insertResponse['id'], insertResponse['full_name']);
@@ -336,6 +366,25 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   validator: (value) => value == null || value.trim().isEmpty ? "Por favor ingresa tu nombre" : null,
                                 ),
                                 const SizedBox(height: 16),
+                                TextFormField(
+                                  controller: _birthdateController,
+                                  readOnly: true,
+                                  onTap: () => _selectBirthDate(context),
+                                  decoration: const InputDecoration(
+                                    labelText: "Fecha de Nacimiento",
+                                    prefixIcon: Icon(Icons.cake_outlined),
+                                    suffixIcon: Icon(Icons.calendar_today_rounded),
+                                    border: OutlineInputBorder(),
+                                    hintText: "DD/MM/AAAA",
+                                  ),
+                                  validator: (value) {
+                                    if (value == null || value.trim().isEmpty) {
+                                      return "Por favor selecciona tu fecha de nacimiento";
+                                    }
+                                    return null;
+                                  },
+                                ),
+                                const SizedBox(height: 16),
                               ],
 
                               TextFormField(
@@ -365,8 +414,35 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 obscureText: true,
                                 validator: (value) => value == null || value.length < 6 ? "La contraseña debe tener mínimo 6 caracteres" : null,
                               ),
-                              const SizedBox(height: 24),
-                              
+
+                              if (_isLoginMode) ...[
+                                Align(
+                                  alignment: Alignment.centerRight,
+                                  child: TextButton(
+                                    style: TextButton.styleFrom(
+                                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0),
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                    onPressed: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(builder: (context) => const RecuperarContraScreen()),
+                                      );
+                                    },
+                                    child: Text(
+                                      "¿Has olvidado tu contraseña?",
+                                      style: TextStyle(
+                                        color: theme.primaryColor,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+
+                              const SizedBox(height: 16),
+
                               _isLoading
                                   ? const CircularProgressIndicator()
                                   : ElevatedButton(
@@ -417,6 +493,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                   _phoneController.clear();
                                   _passwordController.clear();
                                   _nameController.clear();
+                                  _birthdateController.clear();
+                                  _selectedBirthDate = null;
                                   setState(() => _isLoginMode = !_isLoginMode);
                                 },
                                 child: Text(_isLoginMode ? "¿No tienes cuenta? Regístrate aquí" : "¿Ya tienes una cuenta? Conéctate"),
